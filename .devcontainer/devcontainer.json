@@ -1,0 +1,30 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "Godot",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": "."
+  },
+
+	"runArgs": ["--network=host", "--gpus=all"],
+
+	"workspaceMount": "source=${localWorkspaceFolder},target=/home/eir/Documents/godot/mobile-rts,type=bind",
+	"mounts": ["source=${localEnv:HOME}/.ssh,target=/home/eir/.ssh,type=bind,readonly"],
+	"workspaceFolder": "/home/eir/Documents/godot/mobile-rts",
+  	"postStartCommand": "ssh-add /home/eir/.ssh/id_ed25519",
+	
+	"remoteUser": "eir",
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"geequlim.godot-tools",
+				"anthropic.claude-code",
+				"blender-dev.blender-development",
+				"ms-python.python",
+				"ms-vscode.makefile-tools"
+			]
+		}
+	}
+}

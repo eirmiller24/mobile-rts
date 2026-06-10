@@ -1,0 +1,27 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://src/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://src/view/camera_rig.gd" id="2_camrig"]
+
+[sub_resource type="StandardMaterial3D" id="mat_ground"]
+albedo_color = Color(0.21, 0.27, 0.2, 1)
+roughness = 1.0
+
+[sub_resource type="PlaneMesh" id="mesh_ground"]
+material = SubResource("mat_ground")
+size = Vector2(128, 128)
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+mesh = SubResource("mesh_ground")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, -0.35, 0.356824, 0, 0.713937, 0.700213, -0.5, -0.606399, 0.618284, 0, 20, 0)
+shadow_enabled = true
+
+[node name="CameraRig" type="Node3D" parent="."]
+script = ExtResource("2_camrig")
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig"]
