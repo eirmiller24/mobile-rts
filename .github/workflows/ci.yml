@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-4.6.3-stable-linux-x86_64
+
+      - name: Download Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot-bin
+          curl -fL -o /tmp/godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip
+          unzip /tmp/godot.zip -d /tmp
+          mv /tmp/Godot_v4.6.3-stable_linux.x86_64 ~/godot-bin/godot
+
+      - name: Import project
+        # Generates .godot/ (including the global class cache that class_name
+        # resolution needs). Import may exit non-zero on a headless runner
+        # even when the cache is fine; the test step is the real gate.
+        run: ~/godot-bin/godot --headless --path . --import || true
+
+      - name: Determinism check
+        run: ~/godot-bin/godot --headless --path . -s res://tests/determinism_check.gd

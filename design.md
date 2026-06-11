@@ -124,7 +124,8 @@ Console interaction details:
 
 - The console slides to two detents: half-height (viewport still visible and orderable above it) and full-height (for the World tab and complex menus).
 - Console state is preserved per tab — flicking it down and back up returns where you were.
-- Anything the console can target (groups, locations) can be expressed through designations, which is why the designation button is load-bearing.
+- Anything the console can target (groups, locations) can be expressed through designations, which is why the designation button is load-bearing. A console order that needs a location can resolve it automatically from a designation: "build a factory at home base" picks a valid spot inside the home base designation without the player ever leaving the console.
+- **The popup viewport.** When the player wants precision instead of automation, the same order opens a viewport as a *popup over the console*, already jumped to the relevant designation. The player places the building exactly where they want, the popup closes, and the console comes back where they left it. Crucially, this popup is a separate camera: the real viewport underneath never moves, so swiping the console down afterward returns to exactly what the player was looking at before they opened the console. Both paths — auto-resolve and popup placement — must be equally low-friction; which one fires is the player's choice per order, not a settings toggle.
 
 
 ## Economy & Resources
@@ -233,7 +234,8 @@ WC3's GUI trigger editor (events, conditions, actions) is the model:
 
 ### Editor product notes
 
-- The editor is built in Godot as part of this project and ships with the game; desktop and mobile should both be viable methods of editing maps. In-progress maps are saved in the cloud, so a player can pull up a map on any device at any time to pick up where they left off.
+- The editor is built in Godot as part of this project and ships with the game; desktop and mobile should both be viable methods of editing maps from the beginning — pillar #2 (touch-native, never ported) applies to the editor, not just the game. No editor feature ships if it only works with a mouse.
+- In-progress maps are saved in the cloud with version history, so a player can pull up a map on any device at any time and pick up where they left off — open your phone on the train and work on your map. Versioning also gives us recovery from bad edits and a foundation for collaborative editing later (stretch).
 - All official maps are made in it (pillar #3), which forces us to feel its pain immediately.
 - Map sharing: start with file export/import; an in-game browser with moderation comes later and is its own project.
 
@@ -313,3 +315,4 @@ Tracked here so they don't silently become decisions:
 6. **Trigger script surface** — how big does the custom-script language need to be before the editor can build a tower defense? (Good litmus test for editor completeness.)
 7. **Trusted Godot-native maps** — viable tier or permanently out of scope?
 8. **Monetization/distribution** — undecided, but money can never be used to buy an in-game advantage.
+9. **Cloud save backend** — map cloud saves + versioning are the project's first server-side dependency (before multiplayer relays even). Build vs. buy, auth model, and offline-first sync strategy all undecided; the editor must still work fully offline with sync as a layer on top.
