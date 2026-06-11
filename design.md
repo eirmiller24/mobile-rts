@@ -128,6 +128,23 @@ Console interaction details:
 - **The popup viewport.** When the player wants precision instead of automation, the same order opens a viewport as a *popup over the console*, already jumped to the relevant designation. The player places the building exactly where they want, the popup closes, and the console comes back where they left it. Crucially, this popup is a separate camera: the real viewport underneath never moves, so swiping the console down afterward returns to exactly what the player was looking at before they opened the console. Both paths — auto-resolve and popup placement — must be equally low-friction; which one fires is the player's choice per order, not a settings toggle.
 
 
+## UI as Data
+
+The UI is not a global, hardcoded object. Two forces require this:
+
+- **Faction skins.** The Hive and the Rebels share UI mechanics but not aesthetics — each faction gets its own visual treatment of the same console, buttons, and chips.
+- **Editor customization.** Custom maps can redefine the console — which menu options it has and how it behaves (full-screen vs half-window detents, etc) — as well as the location, number, and meaning of the side buttons. The *mechanics* of how the UI works are the same in all maps; what the pieces are bound to is the map's call.
+
+So the architecture splits in two layers:
+
+- **Engine layer (invariant everywhere):** the gesture vocabulary and interaction idioms — tap/lasso selection flow, hold-and-swipe radials, console detents and per-tab state, the popup viewport, designation mechanics. This is what we playtest in M1, and it behaves identically on every map.
+- **Data layer (per faction, overridable per map):** which tabs the console has and what's in them, the side buttons' count/placement/bindings, skins/themes, and behavior defaults (e.g. which detent a tab opens at).
+
+Practically, the in-game UI is instantiated from a **UI catalog** — the same data-catalog mechanism units and abilities use — so map-level UI customization rides the existing catalog override system instead of being a special case.
+
+There's a chicken-or-the-egg problem here: the world editor needs the sim core to make sense, but pillar #3 says we don't build content outside the editor. The resolution: build the initial UI by hand starting in M1, and likely rebuild it in the editor later. The rule that keeps that rebuild cheap: every button and tab reads its meaning from a definition resource — nothing in a scene or script literal ever says "this button is attack-move."
+
+
 ## Economy & Resources
 
 (Names are working names.)
@@ -217,6 +234,7 @@ A map is a self-contained bundle (folder, zipped for distribution) containing:
 - **Terrain** — heightmap, texture/biome painting, cliffs, water, pathing blockers.
 - **Objects** — placed units, structures, resources, doodads, regions, and start locations.
 - **Catalog overrides** — the WC3-style object editor: every unit/ability/structure in the game is defined in a data catalog (stats, costs, ability lists, model references). Maps can override any field and define new entries derived from existing ones. This is how custom units and abilities work — data, not code.
+- **UI overrides** — the console's tab set and behavior, and the side buttons' location/count/bindings, via the same catalog override mechanism (see "UI as Data"). UI interaction mechanics stay engine-level; what the pieces mean is map data.
 - **Triggers** — event / condition / action scripts (see below).
 - **Custom assets** — models, textures, sounds, with format and size constraints.
 - **Manifest** — name, author, version, player slots, game-mode metadata, content hash.
@@ -282,7 +300,7 @@ Early, but the constraints are known:
 Build order chosen so the riskiest theses (controls, deterministic sim) get proven first:
 
 - **M0 — Scaffold.** Godot project, repo conventions, sim/view split skeleton, camera rig, CI sanity. *(in progress)*
-- **M1 — Control prototype.** Selection (tap + lasso), context orders, hold-and-swipe radial buttons, reselect, camera gestures — against dumb stationary units on a flat plane. Goal: the controls demo feels good in the hand. **This milestone is the go/no-go for the whole concept.**
+- **M1 — Control prototype.** Selection (tap + lasso), context orders, hold-and-swipe radial buttons, reselect, camera gestures — against dumb stationary units on a flat plane. Goal: the controls demo feels good in the hand. **This milestone is the go/no-go for the whole concept.** Every M1 button/tab is instantiated from UI catalog definitions (see "UI as Data") — hardcoded bindings now are what make the editor impossible later.
 - **M2 — Sim core.** Fixed-point math, deterministic RNG, entities, grid, flow-field movement, combat resolution, command queue, state hashing, headless determinism tests (same seed + commands twice → identical hashes).
 - **M3 — One faction playable.** Hive vs target dummies: strongholds, capsules, nanomachine economy, 4–5 units, the Build and Economy console tabs.
 - **M4 — Two factions + bots.** Rebel roster, supply, a competent scripted bot, win/loss. First full game loop.

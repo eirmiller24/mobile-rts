@@ -37,6 +37,16 @@ touching sim code.
   influences the sim exclusively by scheduling commands.
 - Any new sim state must be folded into `Sim.state_hash()`.
 
+## UI rules (see design.md "UI as Data")
+
+- The UI is not a global object. Faction skins differ, and custom maps can
+  redefine console tabs/behavior and side button count/location/meaning.
+- Interaction *mechanics* (gestures, radials, console detents, designations)
+  are engine code; what buttons/tabs *mean* is data from the UI catalog.
+- Never hardcode a binding like "this button = attack-move" in a scene or
+  script literal — every button/tab reads its meaning from a definition
+  resource, even in early prototypes.
+
 ## Style
 
 - Tabs for GDScript indentation (Godot default), typed GDScript everywhere
