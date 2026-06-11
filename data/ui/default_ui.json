@@ -1,0 +1,95 @@
+{
+	"commands": {
+		"move":        { "label": "Move",   "color": "4fc3f7" },
+		"attack_move": { "label": "A-Move", "color": "ef5350" },
+		"patrol":      { "label": "Patrol", "color": "ba68c8" },
+		"stop":        { "label": "Stop",   "color": "ffb74d", "targeted": false },
+		"hold":        { "label": "Hold",   "color": "90a4ae", "targeted": false },
+		"attack":      { "label": "Attack", "color": "e53935" },
+		"mine":        { "label": "Mine",   "color": "fdd835" }
+	},
+	"side_buttons": [
+		{
+			"id": "movement",
+			"default_command": "move",
+			"radial": {
+				"up": "attack_move",
+				"right": "patrol",
+				"down": "stop",
+				"left": "hold"
+			}
+		},
+		{
+			"id": "abilities",
+			"default_command": "attack",
+			"radial": {}
+		}
+	],
+	"context_orders": {
+		"ground": "move",
+		"enemy": "attack",
+		"resource": "mine"
+	},
+	"reselect": {
+		"label": "Re",
+		"hold_time": 0.5
+	},
+	"console": {
+		"tabs": [
+			{ "id": "build",    "label": "Build",    "screen": "build" },
+			{ "id": "strategy", "label": "Strategy", "screen": "strategy" },
+			{ "id": "tactics",  "label": "Tactics",  "screen": "tactics" },
+			{ "id": "economy",  "label": "Economy",  "screen": "economy" },
+			{ "id": "organize", "label": "Organize", "screen": "organize" },
+			{ "id": "world",    "label": "World",    "screen": "world" }
+		],
+		"screens": {
+			"build": {
+				"title": "Build",
+				"widgets": [
+					{ "type": "button", "label": "Structures...", "action": "screen:build_structures" },
+					{ "type": "label",  "label": "Placement flows (designations, popup viewport) arrive with M3." }
+				]
+			},
+			"build_structures": {
+				"title": "Structures",
+				"widgets": [
+					{ "type": "button", "label": "Headquarters (dummy)", "action": "none" },
+					{ "type": "button", "label": "Barracks (dummy)", "action": "none" },
+					{ "type": "button", "label": "Refinery (dummy)", "action": "none" }
+				]
+			},
+			"strategy": {
+				"title": "Strategy",
+				"widgets": [
+					{ "type": "button", "label": "Attack enemy base (dummy)", "action": "none" },
+					{ "type": "button", "label": "Defend home base (dummy)", "action": "none" }
+				]
+			},
+			"tactics": {
+				"title": "Tactics",
+				"widgets": [
+					{ "type": "label", "label": "Stances and priorities land with unit AI (M4)." }
+				]
+			},
+			"economy": {
+				"title": "Economy",
+				"widgets": [
+					{ "type": "label", "label": "Mining allocation lands with M3." }
+				]
+			},
+			"organize": {
+				"title": "Organize",
+				"widgets": [
+					{ "type": "label", "label": "Designation management lands with the designation system." }
+				]
+			},
+			"world": {
+				"title": "World",
+				"widgets": [
+					{ "type": "label", "label": "Overview map and heatmaps land later." }
+				]
+			}
+		}
+	}
+}

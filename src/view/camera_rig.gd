@@ -17,6 +17,9 @@ var _zoom := 30.0
 var _yaw := 0.0
 ## touch index -> screen position of active touches
 var _touches: Dictionary = {}
+## Set by the game root (typically Hud.is_point_on_ui); touches starting
+## on UI never become camera gestures.
+var ui_occluder := Callable()
 
 @onready var _camera: Camera3D = $Camera3D
 
@@ -28,6 +31,8 @@ func _ready() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		if event.pressed:
+			if ui_occluder.is_valid() and ui_occluder.call(event.position):
+				return
 			_touches[event.index] = event.position
 		else:
 			_touches.erase(event.index)

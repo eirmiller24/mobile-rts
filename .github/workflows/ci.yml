@@ -35,3 +35,6 @@ jobs:
 
       - name: Determinism check
         run: ~/godot-bin/godot --headless --path . -s res://tests/determinism_check.gd
+
+      - name: UI catalog check
+        run: ~/godot-bin/godot --headless --path . -s res://tests/ui_catalog_check.gd

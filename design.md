@@ -76,6 +76,8 @@ The full gesture set, in one place. Anything not listed here doesn't exist until
 | Two-finger twist | Rotate (tentative, see above) |
 | Three-finger tap | Reset rotation to default (tentative / reserved) |
 | Long-press reselect button | Toggle auto-deselect off |
+| Drag console handle (bottom edge) up/down | Slide console between hidden / half / full detents |
+| Flick console handle | Jump one detent in the flick direction |
 
 Touch ergonomics rules: every tappable button is at least 9mm physical; unit tap targets get a generous radius that scales inversely with zoom (when zoomed way out, taps select the *group* under the finger, not one unit); haptic tick on selection and order confirmation so the player gets feedback without looking at the unit.
 
@@ -86,6 +88,8 @@ Along the right side of the screen will be control buttons, like move, patrol, a
 Also along the right side of the screen is a second control button that has unit abilities. Default is attack, then the four cardinal directions can be whatever else. The four slots are populated from the current selection; mixed selections show the abilities of the majority type, with a swipe-down-on-button gesture to cycle subgroups (tentative).
 
 This hold-and-swipe radial pattern (tap = default, hold = 4 options on cardinal directions) is our core button idiom. It gives us 5 commands per thumb-position at the cost of one button of screen space, and it's the same muscle motion everywhere: movement button, ability button, designation button.
+
+Command grammar is **subject-verb-object**: select units first, then choose the verb from a side button, then tap the object. Verbs that take no object (stop, hold position) execute on the selection the moment they're chosen — select a unit, hit stop, it stops. Choosing a verb with nothing selected does nothing. Changing the selection while a verb is armed drops the verb. (Confirmed in M1 playtesting — the verb-first ordering felt wrong, especially for stop.)
 
 ### The designation button
 
