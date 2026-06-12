@@ -76,6 +76,10 @@ const STRUCTURE := {
 	"abilities": {"type": "id_list", "kind": "ability", "default": []},
 	"trains": {"type": "id_list", "kind": "unit", "default": []},
 	"builds_on_vent": {"type": "bool", "default": false},
+	## Can only be ordered inside the owner's territory (so it never
+	## flies a capsule). The Siphon authors true: extracting a far vent
+	## means extending influence to it first.
+	"requires_territory": {"type": "bool", "default": false},
 	"dummy": {"type": "bool", "default": false},
 	## Where a fresh stronghold's whole nano pool starts (design_m3.md
 	## §4.6) — the game must economically function before the player ever

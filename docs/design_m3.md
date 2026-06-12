@@ -226,6 +226,7 @@ by `type_key` lookups.)
 | `abilities` | id list | as unit; M3 structure abilities are auras (§4.3) |
 | `trains` | id list | unit entries this structure can train |
 | `builds_on_vent` | bool | Siphon placement rule (§4.2) |
+| `requires_territory` | bool | can only be ordered inside own influence — never flies a capsule, the surcharge can't apply. The Siphon authors `true` (decided during M3 playtesting): extracting a far vent means extending influence to it first |
 | `dummy` | bool | neutral target dummies: never acquires, never acts |
 
 **`resource`** (map-placed nodes)
@@ -950,6 +951,15 @@ during implementation, none load-bearing:
   remains M4+).
 - The catalog gained a structure field `default_allocation`
   (idle/alloy/flux/assist) to implement §4.6's catalog-declared default.
+- *Post-playtest (2026-06-12):* structures gained `requires_territory`
+  (§2.5) and the Siphon authors it — siphons can only be built inside
+  influence, so expanding to a far vent means walking territory out to
+  it (relay chain or capsule stronghold) first. BUILD rejects
+  requires_territory orders outside influence before charging; the
+  placement UI shows "needs influence" and the pin auto-resolve only
+  considers influenced vents. Placement also gained vent *snapping*: a
+  vent-bound ghost within ~5 world units of a vent magnetizes onto it
+  (fingers don't have 4-cell accuracy).
 
 *Resolved 2026-06-12 and folded into the body:* capsule hover has no
 timeout and no recall, killable only by `hits_air` attackers (§4.5);

@@ -76,12 +76,12 @@
 		"kind": "structure",
 		"sim": {
 			"hp": 400, "foot_w": 4, "foot_h": 4, "armor_class": "structure",
-			"cost_alloy": 150, "build_time": "20.0", "capsule_cost_alloy": 75,
+			"cost_alloy": 150, "build_time": "20.0",
 			"sight": "6.0", "damage_taken": "1.5",
-			"builds_on_vent": true
+			"builds_on_vent": true, "requires_territory": true
 		},
 		"view": { "shape": "cylinder", "color": "6a1b9a", "height": 1.2 },
-		"ui": { "label": "Siphon", "description": "Builds on a Flux vent and extracts it." }
+		"ui": { "label": "Siphon", "description": "Builds on a Flux vent inside your influence and extracts it." }
 	},
 	"hive.mite": {
 		"kind": "unit",

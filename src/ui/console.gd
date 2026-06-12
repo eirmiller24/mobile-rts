@@ -296,22 +296,31 @@ func _auto_place(type_key: int, px: int, py: int) -> void:
 	var h: int = s["foot_h"]
 	var found := Vector2i(-1, -1)
 	if s["builds_on_vent"]:
-		# Siphons skip the search: nearest untaken vent to the pin.
+		# Siphons skip the search: nearest untaken vent to the pin that
+		# satisfies the territory requirement.
 		var best_d2 := 0
 		for v: Dictionary in sim.vents():
 			if v["taken"]:
 				continue
-			var dx: int = Fixed.to_int(px) - (v["cx"] + v["w"] / 2) / SimGrid.PATH_SUBDIV
-			var dy: int = Fixed.to_int(py) - (v["cy"] + v["h"] / 2) / SimGrid.PATH_SUBDIV
+			var vcx: int = v["cx"]
+			var vcy: int = v["cy"]
+			if s["requires_territory"] and not sim.territory_covers(
+					ctx.local_player,
+					vcx * SimGrid.CELL + v["w"] * SimGrid.CELL / 2,
+					vcy * SimGrid.CELL + v["h"] * SimGrid.CELL / 2):
+				continue
+			var dx: int = Fixed.to_int(px) - (vcx + v["w"] / 2) / SimGrid.PATH_SUBDIV
+			var dy: int = Fixed.to_int(py) - (vcy + v["h"] / 2) / SimGrid.PATH_SUBDIV
 			var d2 := dx * dx + dy * dy
 			if found.x == -1 or d2 < best_d2:
 				best_d2 = d2
-				found = Vector2i(v["cx"], v["cy"])
+				found = Vector2i(vcx, vcy)
 	else:
 		found = _spiral_search(type_key, w, h,
 				sim.grid.cell_of(px) - w / 2, sim.grid.cell_of(py) - h / 2)
 	if found.x == -1:
-		ctx.status.call("no room near that pin")
+		ctx.status.call("no vent inside influence" if s["builds_on_vent"]
+				else "no room near that pin")
 		return
 	var builder: int = sim.builder_for(ctx.local_player, type_key)
 	if builder == 0:
@@ -327,6 +336,7 @@ func _auto_place(type_key: int, px: int, py: int) -> void:
 
 
 func _spiral_search(type_key: int, w: int, h: int, c0x: int, c0y: int) -> Vector2i:
+	var requires: bool = ctx.sim.catalog.sim_of(type_key)["requires_territory"]
 	var fallback := Vector2i(-1, -1)
 	for r in range(0, 25):
 		for pos in _ring_positions(c0x, c0y, r):
@@ -336,8 +346,8 @@ func _spiral_search(type_key: int, w: int, h: int, c0x: int, c0y: int) -> Vector
 			var center_y := pos.y * SimGrid.CELL + h * SimGrid.CELL / 2
 			if ctx.sim.territory_covers(ctx.local_player, center_x, center_y):
 				return pos # inside influence wins at the smallest radius
-			if fallback.x == -1:
-				fallback = pos
+			if fallback.x == -1 and not requires:
+				fallback = pos # requires_territory builds have no fallback
 	return fallback
 
 

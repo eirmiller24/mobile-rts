@@ -349,6 +349,10 @@ func _execute_build(cmd: SimCommand) -> void:
 	var site_x := cx * SimGrid.CELL + w * SimGrid.CELL / 2
 	var site_y := cy * SimGrid.CELL + h * SimGrid.CELL / 2
 	var inside := in_flagged_aura(cmd.player_id, "territory", site_x, site_y)
+	# requires_territory structures only exist inside influence — they
+	# never fly a capsule, so the surcharge can't apply to them either.
+	if s["requires_territory"] and not inside:
+		return
 	var cost_alloy: int = s["cost_alloy"] + (0 if inside else s["capsule_cost_alloy"])
 	var cost_flux: int = s["cost_flux"]
 	if player.alloy < Fixed.from_int(cost_alloy) \

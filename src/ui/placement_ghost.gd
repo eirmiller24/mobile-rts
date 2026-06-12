@@ -11,6 +11,10 @@ var sim: Sim
 var local_player := 1
 var world_offset := 32.0
 
+## A vent-bound ghost within this many world units of a vent center snaps
+## onto it — fingers don't have 4-cell accuracy.
+const VENT_SNAP_DIST := 5.0
+
 var type := -1
 var cx := 0
 var cy := 0
@@ -29,16 +33,47 @@ func set_type(type_key: int) -> void:
 	mesh = box
 
 
-## Snap the footprint under a ground point (world coords).
+## Snap the footprint under a ground point (world coords). Vent-bound
+## structures magnetize to the nearest vent in range (untaken preferred).
 func move_to_world(p: Vector3) -> void:
 	var s := sim.catalog.sim_of(type)
 	var w: int = s["foot_w"]
 	var h: int = s["foot_h"]
+	if s["builds_on_vent"] and _snap_to_vent(p):
+		position = footprint_center() + Vector3(0.0, 0.4, 0.0)
+		return
 	cx = clampi(int(floor((p.x + world_offset) * SimGrid.PATH_SUBDIV)) - w / 2,
 			0, sim.grid.width - w)
 	cy = clampi(int(floor((p.z + world_offset) * SimGrid.PATH_SUBDIV)) - h / 2,
 			0, sim.grid.height - h)
 	position = footprint_center() + Vector3(0.0, 0.4, 0.0)
+
+
+## True if a vent within VENT_SNAP_DIST claimed the ghost. Untaken vents
+## win over taken ones; ties go to the nearest.
+func _snap_to_vent(p: Vector3) -> bool:
+	var best := Vector2i(-1, -1)
+	var best_taken := true
+	var best_d := 0.0
+	for v: Dictionary in sim.vents():
+		var center := Vector2(
+				(v["cx"] + v["w"] / 2.0) / SimGrid.PATH_SUBDIV - world_offset,
+				(v["cy"] + v["h"] / 2.0) / SimGrid.PATH_SUBDIV - world_offset)
+		var d := center.distance_to(Vector2(p.x, p.z))
+		if d > VENT_SNAP_DIST:
+			continue
+		var better: bool = best.x == -1 \
+				or (best_taken and not v["taken"]) \
+				or (best_taken == v["taken"] and d < best_d)
+		if better:
+			best = Vector2i(v["cx"], v["cy"])
+			best_taken = v["taken"]
+			best_d = d
+	if best.x == -1:
+		return false
+	cx = best.x
+	cy = best.y
+	return true
 
 
 func footprint_center() -> Vector3:
@@ -71,16 +106,22 @@ func evaluate() -> Dictionary:
 	var inside := sim.territory_covers(local_player,
 			Fixed.from_float(center.x + world_offset),
 			Fixed.from_float(center.z + world_offset))
-	var cost: int = s["cost_alloy"] + (0 if inside else s["capsule_cost_alloy"])
+	var needs_territory: bool = s["requires_territory"]
+	var cost: int = s["cost_alloy"] \
+			+ (0 if inside or needs_territory else s["capsule_cost_alloy"])
 
 	var info := "%s — %d alloy" % [
 			sim.catalog.ui_of(type).get("label", sim.catalog.id_of(type)), cost]
 	if s["cost_flux"] > 0:
 		info += " + %d flux" % s["cost_flux"]
-	if not inside:
+	if not inside and not needs_territory:
 		info += "  (capsule +%d)" % s["capsule_cost_alloy"]
 	var color := Color(0.3, 0.9, 0.4, 0.45)
-	if blocked:
+	if needs_territory and not inside:
+		blocked = true
+		color = Color(0.9, 0.25, 0.2, 0.5)
+		info += "  NEEDS INFLUENCE — extend territory to it first"
+	elif blocked:
 		color = Color(0.9, 0.25, 0.2, 0.5)
 		info += "  BLOCKED"
 	elif fogged:

@@ -124,7 +124,7 @@ func _layer() -> Dictionary:
 			"sim": {
 				"hp": 100, "foot_w": 2, "foot_h": 2, "armor_class": "structure",
 				"cost_alloy": 40, "build_time": "1.0", "damage_taken": "1.5",
-				"builds_on_vent": true
+				"builds_on_vent": true, "requires_territory": true
 			}
 		},
 		"e.vent": {
@@ -452,6 +452,18 @@ func _test_siphon_vent() -> void:
 	for i in 4:
 		sim.step()
 	_expect(p.alloy == a2 - Fixed.from_int(40), "freed vent should accept a new siphon")
+
+	# requires_territory: a vent outside the dome rejects the siphon
+	# outright — no capsule path exists for it, nothing is charged.
+	sim.spawn_resource(40, 40, _key(sim, "e.vent"))
+	var a3: int = p.alloy
+	_cmd(sim, 1, SimCommand.Kind.BUILD, [hub.id], {"type": siphon, "cx": 40, "cy": 40}, 4)
+	for i in 4:
+		sim.step()
+	_expect(p.alloy == a3, "siphon outside influence must be rejected unpaid")
+	var second := _find(sim, "e.siphon", 1)
+	_expect(second == null or second.foot_x != 40,
+			"no siphon may exist outside influence")
 
 
 # --- abilities (design_m3.md §4.8) ----------------------------------------------

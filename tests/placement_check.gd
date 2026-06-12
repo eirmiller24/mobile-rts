@@ -52,15 +52,27 @@ func _initialize() -> void:
 			"fogged free ground should be amber-placeable (%s)" % [v])
 	_expect("capsule" in v["info"], "outside influence shows the surcharge")
 
-	# Siphon: red off-vent, green exactly on the vent.
+	# Siphon: red away from any vent, snaps onto a near one.
 	ghost.set_type(map.catalog.key_of("hive.siphon"))
-	ghost.move_to_world(Vector3(-10.0, 0.0, -10.0))
+	ghost.move_to_world(Vector3(-1.0, 0.0, -1.0)) # ~17 units from any vent
 	v = ghost.evaluate()
-	_expect(v["blocked"], "siphon off-vent should be blocked")
-	ghost.cx = 36
-	ghost.cy = 36
+	_expect(v["blocked"], "siphon away from vents should be blocked")
+	# Home vent footprint starts at cells (36,36) = world (18,18), center
+	# (19,19) -> offset -32: (-13,-13). A sloppy tap ~3 units off snaps on.
+	ghost.move_to_world(Vector3(-15.5, 0.0, -11.0))
+	_expect(ghost.cx == 36 and ghost.cy == 36,
+			"siphon should snap to the near vent (got %d,%d)" % [ghost.cx, ghost.cy])
 	v = ghost.evaluate()
-	_expect(not v["blocked"], "siphon exactly on the vent should be valid")
+	_expect(not v["blocked"], "snapped siphon on an influenced vent is valid")
+
+	# requires_territory: the expansion vent at (100,30) is out of
+	# influence — red with the explanation, even though the vent is free.
+	ghost.cx = 100
+	ghost.cy = 30
+	v = ghost.evaluate()
+	_expect(v["blocked"] and not v["inside"],
+			"siphon on an uninfluenced vent must be blocked")
+	_expect("NEEDS INFLUENCE" in v["info"], "the why should be in the info line")
 
 	# The prediction agrees with the sim: a BUILD at the green spot lands.
 	var relay := map.catalog.key_of("hive.relay")
