@@ -9,6 +9,7 @@ signal command_chosen(command_id: String)
 var catalog: UICatalog
 ## Set by the game root before add_child, like catalog.
 var designations: Designations
+var ctx: GameUIContext
 var buttons: Array[RadialButton] = []
 var reselect: ReselectButton
 var designation_button: DesignationButton
@@ -16,6 +17,26 @@ var chips: DesignationChips
 var lasso_overlay: LassoOverlay
 var status_label: Label
 var console: ConsoleView
+
+var _readout: Label
+var _readout_accum := 0.0
+
+
+## HUD resource readout (design_m3.md §6.7): floored balances + derived
+## bandwidth, labels skinned by the UI catalog.
+func _process(delta: float) -> void:
+	if _readout == null or ctx == null:
+		return
+	_readout_accum += delta
+	if _readout_accum < 0.25:
+		return
+	_readout_accum = 0.0
+	var res := ctx.sim.resources_of(ctx.local_player)
+	var bw := ctx.sim.bandwidth_of(ctx.local_player)
+	_readout.text = "%s %d    %s %d    %s %d/%d" % [
+			catalog.hud_labels["alloy"], res["alloy"],
+			catalog.hud_labels["flux"], res["flux"],
+			catalog.hud_labels["bandwidth"], bw["used"], bw["provided"]]
 
 
 func _ready() -> void:
@@ -81,9 +102,21 @@ func _ready() -> void:
 		chips.offset_bottom = 8.0 + DesignationChips.CHIP_H
 		add_child(chips)
 
+	if ctx != null:
+		_readout = Label.new()
+		_readout.anchor_left = 1.0
+		_readout.anchor_right = 1.0
+		_readout.offset_left = -360.0
+		_readout.offset_right = -16.0
+		_readout.offset_top = 12.0
+		_readout.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		_readout.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(_readout)
+
 	# Last child = on top of everything else in the layer.
 	console = ConsoleView.new()
 	console.catalog = catalog
+	console.ctx = ctx
 	add_child(console)
 
 

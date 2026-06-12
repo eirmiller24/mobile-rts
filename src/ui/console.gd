@@ -18,7 +18,14 @@ const FLICK_TIME := 0.35
 const FLICK_DISTANCE := 48.0
 
 var catalog: UICatalog
+## Game access for live widgets (set by the HUD before add_child); null
+## keeps the console structural-only (ui_catalog_check, M1 demos).
+var ctx: GameUIContext
 var detent := Detent.PEEK
+
+## Structure type armed by the Build flow, awaiting a placement choice
+## (design_m3.md §6.3 screen 2); -1 when idle.
+var _pending_build := -1
 
 var _handle: Handle
 var _tab_bar: HBoxContainer
@@ -193,12 +200,37 @@ func _build_widget(widget: UICatalog.WidgetDef) -> Control:
 			btn.custom_minimum_size.y = 52.0
 			btn.pressed.connect(_on_widget_pressed.bind(widget))
 			return btn
-		_:
-			var label := Label.new()
-			label.text = widget.label
-			label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			label.modulate = Color(1, 1, 1, 0.7)
-			return label
+		"structure_grid":
+			if ctx != null:
+				return ConsoleWidgets.StructureGrid.new(ctx,
+						_begin_placement.bind(widget))
+		"unit_grid":
+			if ctx != null:
+				return ConsoleWidgets.UnitGrid.new(ctx)
+		"queue_strip":
+			if ctx != null:
+				return ConsoleWidgets.QueueStrip.new(ctx)
+		"alloc_sliders":
+			if ctx != null:
+				return ConsoleWidgets.AllocSliders.new(ctx)
+		"minimap":
+			if ctx != null:
+				var mini := MinimapView.new()
+				mini.sim = ctx.sim
+				mini.local_player = ctx.local_player
+				mini.designations = ctx.designations
+				mini.mode = MinimapView.Mode.PICK \
+						if widget.params.get("mode", "jump") == "pick" \
+						else MinimapView.Mode.JUMP
+				mini.custom_minimum_size = Vector2(320, 320)
+				mini.pin_tapped.connect(_on_minimap_pin.bind(mini))
+				mini.point_tapped.connect(_on_minimap_point.bind(mini))
+				return mini
+	var label := Label.new()
+	label.text = widget.label
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.modulate = Color(1, 1, 1, 0.7)
+	return label
 
 
 func _on_widget_pressed(widget: UICatalog.WidgetDef) -> void:
@@ -210,6 +242,121 @@ func _on_widget_pressed(widget: UICatalog.WidgetDef) -> void:
 
 func _on_back() -> void:
 	_show_screen(_tab_root(_current_tab))
+
+
+# --- Build placement flow (design_m3.md §6.3) -----------------------------------
+
+
+func _begin_placement(type_key: int, widget: UICatalog.WidgetDef) -> void:
+	_pending_build = type_key
+	_show_screen(widget.params.get("placement_screen", ""))
+
+
+## Tap a designation pin while a build is armed -> auto-resolve a legal
+## footprint near the pin without leaving the console. Otherwise jump.
+func _on_minimap_pin(slot: int, mini: MinimapView) -> void:
+	var e: Variant = ctx.designations.entry(slot)
+	if e == null or e["kind"] != "location":
+		return
+	if mini.mode == MinimapView.Mode.PICK and _pending_build != -1:
+		_auto_place(_pending_build, e["x"], e["y"])
+	else:
+		ctx.jump_camera.call(e["x"], e["y"])
+		detent = Detent.PEEK
+
+
+## Bare map point: jump mode centers the camera and closes the console;
+## pick mode opens the popup viewport for hand placement there.
+func _on_minimap_point(x: int, y: int, mini: MinimapView) -> void:
+	if mini.mode == MinimapView.Mode.PICK and _pending_build != -1:
+		var type := _pending_build
+		_pending_build = -1
+		_on_back()
+		ctx.open_placement.call(type, x, y)
+	else:
+		ctx.jump_camera.call(x, y)
+		detent = Detent.PEEK
+
+
+## Client-side spiral search from the pin for the first legal footprint,
+## inside-influence positions preferred. Legality is judged on what the
+## player can see — fogged cells count as free; the sim settles the truth
+## at landing (§6.3).
+func _auto_place(type_key: int, px: int, py: int) -> void:
+	var sim := ctx.sim
+	var s := sim.catalog.sim_of(type_key)
+	var w: int = s["foot_w"]
+	var h: int = s["foot_h"]
+	var found := Vector2i(-1, -1)
+	if s["builds_on_vent"]:
+		# Siphons skip the search: nearest untaken vent to the pin.
+		var best_d2 := 0
+		for v: Dictionary in sim.vents():
+			if v["taken"]:
+				continue
+			var dx: int = Fixed.to_int(px) - (v["cx"] + v["w"] / 2) / SimGrid.PATH_SUBDIV
+			var dy: int = Fixed.to_int(py) - (v["cy"] + v["h"] / 2) / SimGrid.PATH_SUBDIV
+			var d2 := dx * dx + dy * dy
+			if found.x == -1 or d2 < best_d2:
+				best_d2 = d2
+				found = Vector2i(v["cx"], v["cy"])
+	else:
+		found = _spiral_search(type_key, w, h,
+				sim.grid.cell_of(px) - w / 2, sim.grid.cell_of(py) - h / 2)
+	if found.x == -1:
+		ctx.status.call("no room near that pin")
+		return
+	var builder: int = sim.builder_for(ctx.local_player, type_key)
+	if builder == 0:
+		ctx.status.call("nothing can build that")
+		return
+	_pending_build = -1
+	ctx.issue.call(SimCommand.Kind.BUILD, [builder] as Array[int],
+			{"type": type_key, "cx": found.x, "cy": found.y})
+	ctx.status.call("building %s" % ctx.label_of(type_key))
+	_on_back()
+
+
+func _spiral_search(type_key: int, w: int, h: int, c0x: int, c0y: int) -> Vector2i:
+	var fallback := Vector2i(-1, -1)
+	for r in range(0, 25):
+		for pos in _ring_positions(c0x, c0y, r):
+			if not _predict_legal(type_key, pos.x, pos.y, w, h):
+				continue
+			var center_x := pos.x * SimGrid.CELL + w * SimGrid.CELL / 2
+			var center_y := pos.y * SimGrid.CELL + h * SimGrid.CELL / 2
+			if ctx.sim.territory_covers(ctx.local_player, center_x, center_y):
+				return pos # inside influence wins at the smallest radius
+			if fallback.x == -1:
+				fallback = pos
+	return fallback
+
+
+func _ring_positions(cx: int, cy: int, r: int) -> Array[Vector2i]:
+	var result: Array[Vector2i] = []
+	if r == 0:
+		result.append(Vector2i(cx, cy))
+		return result
+	for x in range(cx - r, cx + r + 1):
+		result.append(Vector2i(x, cy - r))
+		result.append(Vector2i(x, cy + r))
+	for y in range(cy - r + 1, cy + r):
+		result.append(Vector2i(cx - r, y))
+		result.append(Vector2i(cx + r, y))
+	return result
+
+
+## Visible-and-blocked fails; fog counts as free (the player's bet).
+func _predict_legal(type_key: int, cx: int, cy: int, w: int, h: int) -> bool:
+	var sim := ctx.sim
+	if cx < 0 or cy < 0 or cx + w > sim.grid.width or cy + h > sim.grid.height:
+		return false
+	for fy in range(cy, cy + h):
+		for fx in range(cx, cx + w):
+			if sim.is_cell_visible(ctx.local_player, fx, fy) \
+					and sim.grid.is_blocked(fx, fy):
+				return false
+	return true
 
 
 func _tab_root(tab_id: String) -> String:

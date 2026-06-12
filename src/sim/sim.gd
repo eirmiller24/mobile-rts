@@ -1912,6 +1912,116 @@ func resources_of(player: int) -> Dictionary:
 	return {"alloy": Fixed.to_int(p.alloy), "flux": Fixed.to_int(p.flux)}
 
 
+## Structure types a player can currently order: the union of
+## `structures` across functional build abilities (design_m3.md §6.3).
+func buildable_structures(player: int) -> PackedInt32Array:
+	var seen := {}
+	var result := PackedInt32Array()
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.player != player or not _functional(e):
+			continue
+		for ak in _abilities_of(e):
+			var ab := catalog.sim_of(ak)
+			if ab["ability_kind"] != CatalogSchema.AbilityKind.BUILD:
+				continue
+			for type: int in ab["structures"]:
+				if not seen.has(type):
+					seen[type] = true
+					result.append(type)
+	return result
+
+
+## The builder a BUILD command should name for this type: the first
+## functional structure whose build ability sells it (lowest id), 0 if
+## none. The UI resolves *who* before the command exists (§4.9).
+func builder_for(player: int, type_key: int) -> int:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.player == player and _functional(e) \
+				and _build_ability_for(e, type_key):
+			return id
+	return 0
+
+
+## Unit types trainable right now (union of `trains` across the player's
+## functional structures).
+func trainable_units(player: int) -> PackedInt32Array:
+	var seen := {}
+	var result := PackedInt32Array()
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.player != player or not _functional(e) \
+				or e.kind != SimEntity.Kind.STRUCTURE:
+			continue
+		for type: int in catalog.sim_of(e.type_key)["trains"]:
+			if not seen.has(type):
+				seen[type] = true
+				result.append(type)
+	return result
+
+
+## TRAIN target: the eligible structure with the shortest queue, lowest
+## id tie-break (§6.5), 0 if none.
+func train_structure_for(player: int, type_key: int) -> int:
+	var best := 0
+	var best_queue := TRAIN_QUEUE_MAX
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.player != player or not _functional(e) \
+				or e.kind != SimEntity.Kind.STRUCTURE:
+			continue
+		if type_key not in catalog.sim_of(e.type_key)["trains"]:
+			continue
+		if e.train_queue.size() < best_queue:
+			best_queue = e.train_queue.size()
+			best = id
+	return best
+
+
+## The player's nano-pool structures (Economy tab rows), ascending id.
+func stronghold_ids(player: int) -> PackedInt32Array:
+	var result := PackedInt32Array()
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.player == player and _functional(e) \
+				and e.kind == SimEntity.Kind.STRUCTURE \
+				and catalog.sim_of(e.type_key)["nano_pool"] > 0:
+			result.append(id)
+	return result
+
+
+## Structures of a player that can train units, with their queues
+## ([{id, label_key, queue: [type_keys]}]) — the queue strip reads this.
+func training_queues(player: int) -> Array:
+	var result := []
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.player != player or e.hp <= 0 \
+				or e.kind != SimEntity.Kind.STRUCTURE:
+			continue
+		if catalog.sim_of(e.type_key)["trains"].is_empty():
+			continue
+		var queue := PackedInt32Array()
+		for q: Dictionary in e.train_queue:
+			queue.append(q["type"])
+		result.append({"id": id, "type_key": e.type_key, "queue": queue,
+				"head_left": 0 if e.train_queue.is_empty() else e.train_queue[0]["left"]})
+	return result
+
+
+## Flux vents as [{id, cx, cy, w, h, taken}] — the Build flow's siphon
+## pick step reads this (§6.3: siphons skip placement search).
+func vents() -> Array:
+	var result := []
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.is_resource() and e.resource_kind == CatalogSchema.ResourceKind.FLUX:
+			result.append({"id": id, "cx": e.foot_x, "cy": e.foot_y,
+					"w": e.foot_w, "h": e.foot_h, "taken": _siphon_on(id) != 0})
+	return result
+
+
 ## Placement prediction helpers for the build UI (client-side mirror of
 ## the BUILD checks; the sim still revalidates on execution).
 func vent_at(cx: int, cy: int, w: int, h: int) -> int:

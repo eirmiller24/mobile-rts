@@ -20,6 +20,10 @@ class ButtonDef:
 	var default_command: String
 	## direction ("up"/"right"/"down"/"left") -> command id
 	var radial: Dictionary = {}
+	## When true, the engine fills this button's radial from the current
+	## selection's catalog abilities (design_m3.md §6.7). The *mechanic*
+	## is engine code; that this button hosts it is data.
+	var selection_abilities := false
 
 
 class TabDef:
@@ -35,12 +39,18 @@ class ScreenDef:
 
 
 class WidgetDef:
-	## "button" or "label"; new widget types are added here and in the
+	## See WIDGET_TYPES; new widget types are added there and in the
 	## console's widget builder, never as bespoke scenes.
 	var type: String
 	var label: String
 	## "none", or "screen:<id>" to navigate within the console.
 	var action := "none"
+	## Type-specific parameters (e.g. minimap mode, placement screen id).
+	var params: Dictionary = {}
+
+
+const WIDGET_TYPES := ["button", "label", "structure_grid", "unit_grid",
+		"queue_strip", "alloc_sliders", "minimap"]
 
 
 ## command id -> CommandDef
@@ -53,6 +63,10 @@ var reselect_hold_time := 0.5
 var console_tabs: Array[TabDef] = []
 ## screen id -> ScreenDef
 var console_screens: Dictionary = {}
+## HUD resource readout labels (faction-skinnable: Bandwidth is Hive
+## naming, M4's Crew reuses the slot).
+var hud_labels: Dictionary = {"alloy": "Alloy", "flux": "Flux",
+		"bandwidth": "Bandwidth"}
 
 
 static func load_default() -> UICatalog:
@@ -83,6 +97,7 @@ static func load_from_json(path: String) -> UICatalog:
 		btn.id = raw.get("id", "")
 		btn.default_command = raw.get("default_command", "")
 		btn.radial = raw.get("radial", {})
+		btn.selection_abilities = raw.get("selection_abilities", false)
 		catalog.side_buttons.append(btn)
 	catalog.context_orders = data.get("context_orders", {})
 	var reselect: Dictionary = data.get("reselect", {})
@@ -105,8 +120,13 @@ static func load_from_json(path: String) -> UICatalog:
 			widget.type = raw_widget.get("type", "label")
 			widget.label = raw_widget.get("label", "")
 			widget.action = raw_widget.get("action", "none")
+			widget.params = raw_widget.get("params", {})
 			screen.widgets.append(widget)
 		catalog.console_screens[screen_id] = screen
+	var hud: Dictionary = data.get("hud", {})
+	for key in catalog.hud_labels.keys():
+		if hud.has(key):
+			catalog.hud_labels[key] = hud[key]
 	return catalog
 
 
@@ -147,7 +167,7 @@ func validate() -> PackedStringArray:
 	for screen_id in console_screens:
 		var screen: ScreenDef = console_screens[screen_id]
 		for widget in screen.widgets:
-			if widget.type not in ["button", "label"]:
+			if widget.type not in WIDGET_TYPES:
 				errors.append("screen '%s': unknown widget type '%s'"
 						% [screen_id, widget.type])
 			if widget.action.begins_with("screen:"):
@@ -155,4 +175,13 @@ func validate() -> PackedStringArray:
 				if not console_screens.has(target):
 					errors.append("screen '%s': link to unknown screen '%s'"
 							% [screen_id, target])
+			if widget.type == "minimap" \
+					and widget.params.get("mode", "jump") not in ["jump", "pick"]:
+				errors.append("screen '%s': bad minimap mode '%s'"
+						% [screen_id, widget.params.get("mode")])
+			if widget.type == "structure_grid":
+				var place: String = widget.params.get("placement_screen", "")
+				if place.is_empty() or not console_screens.has(place):
+					errors.append("screen '%s': structure_grid needs a valid placement_screen"
+							% screen_id)
 	return errors

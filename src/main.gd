@@ -31,6 +31,8 @@ var catalog: UICatalog
 var hud: Hud
 var controller: SelectionController
 var designations: Designations
+var ctx: GameUIContext
+var placement: PlacementPopup
 ## The sim's origin is the map corner; the view keeps the map centered.
 var world_offset := 32.0
 
@@ -62,11 +64,31 @@ func _ready() -> void:
 		push_error("UI catalog: %s" % problem)
 
 	designations = Designations.new()
+	ctx = GameUIContext.new()
+	ctx.sim = sim
+	ctx.local_player = LOCAL_PLAYER
+	ctx.designations = designations
+	ctx.world_offset = world_offset
+	ctx.issue = _issue_command
+	ctx.jump_camera = jump_camera_to_sim
+	ctx.open_placement = _open_placement
+	ctx.status = func(text: String) -> void: hud.set_status(text)
+
 	hud = Hud.new()
 	hud.catalog = catalog
 	hud.designations = designations
+	hud.ctx = ctx
 	add_child(hud)
 	camera_rig.ui_occluder = hud.is_point_on_ui
+
+	# Placement popup above the console (added after the HUD layer).
+	placement = PlacementPopup.new()
+	placement.sim = sim
+	placement.local_player = LOCAL_PLAYER
+	placement.world_offset = world_offset
+	placement.ghost_parent = self
+	placement.place_confirmed.connect(_on_place_confirmed)
+	hud.add_child(placement)
 
 	controller = SelectionController.new()
 	controller.camera = camera
@@ -158,6 +180,60 @@ func _sim_to_view(e: SimEntity) -> Vector3:
 
 func _on_selection_changed(units: Array[UnitView]) -> void:
 	hud.set_status("" if units.is_empty() else "%d selected" % units.size())
+	_populate_ability_button(units)
+
+
+## Fill the selection_abilities side button's radial from the majority
+## type's catalog abilities (design_m3.md §6.7): the radial idiom is
+## engine code, what the slots mean is data from the object catalog.
+func _populate_ability_button(units: Array[UnitView]) -> void:
+	var btn: RadialButton = null
+	for b in hud.buttons:
+		if b.def.selection_abilities:
+			btn = b
+	if btn == null:
+		return
+	btn.def.radial = {}
+	var majority := _majority_type(units)
+	if majority == -1:
+		btn.queue_redraw()
+		return
+	var dirs := ["up", "right", "down", "left"]
+	var slot := 0
+	for ak in map.catalog.sim_of(majority).get("abilities", PackedInt32Array()):
+		var ab := map.catalog.sim_of(ak)
+		var kind: int = ab["ability_kind"]
+		if kind != CatalogSchema.AbilityKind.TOGGLE_MORPH \
+				and kind != CatalogSchema.AbilityKind.BLINK:
+			continue # build is console macro; auras are passive
+		if slot >= dirs.size():
+			break
+		var cmd_id := "ability:%s" % map.catalog.id_of(ak)
+		if not catalog.commands.has(cmd_id):
+			var def := UICatalog.CommandDef.new()
+			def.id = cmd_id
+			def.label = map.catalog.ui_of(ak).get("label", map.catalog.id_of(ak))
+			def.color = Color(0.45, 0.85, 0.65)
+			def.targeted = kind == CatalogSchema.AbilityKind.BLINK
+			catalog.commands[cmd_id] = def
+		btn.def.radial[dirs[slot]] = cmd_id
+		slot += 1
+	btn.queue_redraw()
+
+
+## Most common unit type among the selection (lowest type_key on ties).
+func _majority_type(units: Array[UnitView]) -> int:
+	var counts := {}
+	for u in units:
+		var e: SimEntity = sim.entities.get(u.entity_id) if is_instance_valid(u) else null
+		if e != null and e.is_unit():
+			counts[e.type_key] = counts.get(e.type_key, 0) + 1
+	var best := -1
+	for type: int in counts:
+		if best == -1 or counts[type] > counts[best] \
+				or (counts[type] == counts[best] and type < best):
+			best = type
+	return best
 
 
 # --- designations (design_m3.md §6.1) ------------------------------------------
@@ -216,20 +292,48 @@ func _on_order_issued(command_id: String, units: Array[UnitView],
 	ids.sort()
 	if ids.is_empty():
 		return
-	var kind: SimCommand.Kind = VERB_KIND.get(command_id, SimCommand.Kind.MOVE)
 
-	var cmd := SimCommand.new(LOCAL_PLAYER, kind)
-	cmd.targets = ids
-	cmd.seq = _cmd_seq
-	_cmd_seq += 1
-	if kind != SimCommand.Kind.STOP:
-		cmd.params = {
-			"x": Fixed.from_float(world_pos.x + world_offset),
-			"y": Fixed.from_float(world_pos.z + world_offset),
-		}
-	sim.schedule(cmd)
+	var params := {
+		"x": Fixed.from_float(world_pos.x + world_offset),
+		"y": Fixed.from_float(world_pos.z + world_offset),
+	}
+	if command_id.begins_with("ability:"):
+		params["ability"] = map.catalog.key_of(command_id.trim_prefix("ability:"))
+		_issue_command(SimCommand.Kind.ABILITY, ids, params)
+	else:
+		var kind: SimCommand.Kind = VERB_KIND.get(command_id, SimCommand.Kind.MOVE)
+		_issue_command(kind, ids,
+				{} if kind == SimCommand.Kind.STOP else params)
 
 	OrderMarker.spawn(self, world_pos, catalog.command(command_id).color)
 	var target_desc := "" if target == null else " (target: %s/%s)" % [
 			UnitView.Kind.keys()[target.kind], target.faction]
 	print("[order] %s x%d -> %v%s" % [command_id, ids.size(), world_pos, target_desc])
+
+
+## The single seam every UI path schedules commands through.
+func _issue_command(kind: SimCommand.Kind, targets: Array[int],
+		params: Dictionary) -> void:
+	var cmd := SimCommand.new(LOCAL_PLAYER, kind)
+	cmd.targets = targets
+	cmd.params = params
+	cmd.seq = _cmd_seq
+	_cmd_seq += 1
+	sim.schedule(cmd)
+
+
+# --- build placement (design_m3.md §6.3/§6.4) -----------------------------------
+
+
+func _open_placement(type_key: int, sim_x: int, sim_y: int) -> void:
+	placement.begin(type_key, sim_x, sim_y)
+
+
+func _on_place_confirmed(type_key: int, cx: int, cy: int) -> void:
+	var builder := sim.builder_for(LOCAL_PLAYER, type_key)
+	if builder == 0:
+		hud.set_status("nothing can build that")
+		return
+	_issue_command(SimCommand.Kind.BUILD, [builder],
+			{"type": type_key, "cx": cx, "cy": cy})
+	hud.set_status("building %s" % ctx.label_of(type_key))

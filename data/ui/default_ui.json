@@ -5,8 +5,7 @@
 		"patrol":      { "label": "Patrol", "color": "ba68c8" },
 		"stop":        { "label": "Stop",   "color": "ffb74d", "targeted": false },
 		"hold":        { "label": "Hold",   "color": "90a4ae", "targeted": false },
-		"attack":      { "label": "Attack", "color": "e53935" },
-		"mine":        { "label": "Mine",   "color": "fdd835" }
+		"attack":      { "label": "Attack", "color": "e53935" }
 	},
 	"side_buttons": [
 		{
@@ -22,17 +21,23 @@
 		{
 			"id": "abilities",
 			"default_command": "attack",
-			"radial": {}
+			"radial": {},
+			"selection_abilities": true
 		}
 	],
 	"context_orders": {
 		"ground": "move",
 		"enemy": "attack",
-		"resource": "mine"
+		"resource": "move"
 	},
 	"reselect": {
 		"label": "Re",
 		"hold_time": 0.5
+	},
+	"hud": {
+		"alloy": "Alloy",
+		"flux": "Flux",
+		"bandwidth": "Bandwidth"
 	},
 	"console": {
 		"tabs": [
@@ -47,23 +52,28 @@
 			"build": {
 				"title": "Build",
 				"widgets": [
-					{ "type": "button", "label": "Structures...", "action": "screen:build_structures" },
-					{ "type": "label",  "label": "Placement flows (designations, popup viewport) arrive with M3." }
+					{ "type": "structure_grid", "params": { "placement_screen": "build_place" } },
+					{ "type": "button", "label": "Training...", "action": "screen:build_train" }
 				]
 			},
-			"build_structures": {
-				"title": "Structures",
+			"build_place": {
+				"title": "Placement",
 				"widgets": [
-					{ "type": "button", "label": "Headquarters (dummy)", "action": "none" },
-					{ "type": "button", "label": "Barracks (dummy)", "action": "none" },
-					{ "type": "button", "label": "Refinery (dummy)", "action": "none" }
+					{ "type": "label", "label": "Tap a pin to auto-place near it, or tap anywhere on the map to place precisely." },
+					{ "type": "minimap", "params": { "mode": "pick" } }
+				]
+			},
+			"build_train": {
+				"title": "Training",
+				"widgets": [
+					{ "type": "unit_grid" },
+					{ "type": "queue_strip" }
 				]
 			},
 			"strategy": {
 				"title": "Strategy",
 				"widgets": [
-					{ "type": "button", "label": "Attack enemy base (dummy)", "action": "none" },
-					{ "type": "button", "label": "Defend home base (dummy)", "action": "none" }
+					{ "type": "label", "label": "Standing orders for designated groups land in M4." }
 				]
 			},
 			"tactics": {
@@ -75,19 +85,20 @@
 			"economy": {
 				"title": "Economy",
 				"widgets": [
-					{ "type": "label", "label": "Mining allocation lands with M3." }
+					{ "type": "alloc_sliders" }
 				]
 			},
 			"organize": {
 				"title": "Organize",
 				"widgets": [
-					{ "type": "label", "label": "Designation management lands with the designation system." }
+					{ "type": "label", "label": "Designation management lands in M4. Long-press the map to pin a location; the Desig button assigns groups." }
 				]
 			},
 			"world": {
 				"title": "World",
 				"widgets": [
-					{ "type": "label", "label": "Overview map and heatmaps land later." }
+					{ "type": "minimap", "params": { "mode": "jump" } },
+					{ "type": "label", "label": "Heatmaps and overlays land later; tap to jump the camera." }
 				]
 			}
 		}
