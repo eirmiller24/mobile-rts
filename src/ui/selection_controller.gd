@@ -16,9 +16,13 @@ extends Node
 signal selection_changed(units: Array[UnitView])
 signal order_issued(command_id: String, units: Array[UnitView],
 		world_pos: Vector3, target: UnitView)
+## Stationary single-finger hold on empty ground with nothing selected —
+## the "designate this spot" gesture (design_m3.md §6.1).
+signal long_pressed(world_pos: Vector3)
 
 const TAP_MOVE_THRESHOLD := 16.0
 const PICK_RADIUS_PX := 48.0
+const LONG_PRESS_TIME := 0.6
 
 var camera: Camera3D
 var hud: Hud
@@ -35,6 +39,17 @@ var _path := PackedVector2Array()
 var _moved := false
 var _cancelled := false
 var _touch_count := 0
+var _press_held := 0.0
+
+
+func _process(delta: float) -> void:
+	if _active_index == -1 or _moved or _cancelled:
+		return
+	_press_held += delta
+	if _press_held >= LONG_PRESS_TIME and selection.is_empty():
+		_cancelled = true # consume the gesture; release does nothing more
+		long_pressed.emit(_ground_point(_path[0]))
+		Input.vibrate_handheld(30)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -46,6 +61,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				_path = PackedVector2Array([event.position])
 				_moved = false
 				_cancelled = false
+				_press_held = 0.0
 			else:
 				# Second finger = camera gesture; abandon selection gesture.
 				_cancelled = true

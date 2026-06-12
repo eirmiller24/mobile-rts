@@ -7,8 +7,12 @@ extends CanvasLayer
 signal command_chosen(command_id: String)
 
 var catalog: UICatalog
+## Set by the game root before add_child, like catalog.
+var designations: Designations
 var buttons: Array[RadialButton] = []
 var reselect: ReselectButton
+var designation_button: DesignationButton
+var chips: DesignationChips
 var lasso_overlay: LassoOverlay
 var status_label: Label
 var console: ConsoleView
@@ -34,6 +38,12 @@ func _ready() -> void:
 		buttons.append(btn)
 		column_width = maxf(column_width, btn.custom_minimum_size.x)
 		column_height += btn.custom_minimum_size.y
+	if designations != null:
+		designation_button = DesignationButton.new()
+		designation_button.setup(designations)
+		column.add_child(designation_button)
+		column_width = maxf(column_width, designation_button.custom_minimum_size.x)
+		column_height += designation_button.custom_minimum_size.y + separation
 	column_height += separation * maxi(0, buttons.size() - 1)
 	# Pin to the right edge, vertically centered, regardless of window size.
 	column.anchor_left = 1.0
@@ -63,6 +73,13 @@ func _ready() -> void:
 	status_label.position = Vector2(16, 12)
 	status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(status_label)
+
+	if designations != null:
+		chips = DesignationChips.new()
+		chips.designations = designations
+		chips.offset_top = 8.0
+		chips.offset_bottom = 8.0 + DesignationChips.CHIP_H
+		add_child(chips)
 
 	# Last child = on top of everything else in the layer.
 	console = ConsoleView.new()
@@ -98,6 +115,12 @@ func is_point_on_ui(point: Vector2) -> bool:
 	for btn in buttons:
 		if btn.get_global_rect().has_point(point):
 			return true
+	if designation_button != null \
+			and designation_button.get_global_rect().has_point(point):
+		return true
+	if chips != null and chips._row != null \
+			and chips._row.get_global_rect().has_point(point):
+		return true
 	if point.y >= console.position.y: # console spans the full width
 		return true
 	return reselect.get_global_rect().has_point(point)

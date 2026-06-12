@@ -30,6 +30,7 @@ var map: MapData
 var catalog: UICatalog
 var hud: Hud
 var controller: SelectionController
+var designations: Designations
 ## The sim's origin is the map corner; the view keeps the map centered.
 var world_offset := 32.0
 
@@ -60,8 +61,10 @@ func _ready() -> void:
 	for problem in catalog.validate():
 		push_error("UI catalog: %s" % problem)
 
+	designations = Designations.new()
 	hud = Hud.new()
 	hud.catalog = catalog
+	hud.designations = designations
 	add_child(hud)
 	camera_rig.ui_occluder = hud.is_point_on_ui
 
@@ -77,6 +80,13 @@ func _ready() -> void:
 			func(enabled: bool) -> void: controller.auto_deselect = enabled)
 	controller.selection_changed.connect(_on_selection_changed)
 	controller.order_issued.connect(_on_order_issued)
+
+	controller.long_pressed.connect(_on_ground_long_pressed)
+	hud.designation_button.has_selection = func() -> bool:
+		return not controller.selection.is_empty()
+	hud.designation_button.assign_requested.connect(_on_designation_assign)
+	hud.designation_button.recall_requested.connect(_on_designation_recall)
+	hud.chips.chip_tapped.connect(_on_designation_recall)
 
 	_sync_views()
 
@@ -120,6 +130,9 @@ func _faction_of(e: SimEntity) -> int:
 ## entities, and drop views whose entities died.
 func _capture_tick() -> void:
 	_sync_views()
+	designations.prune(func(id: int) -> bool:
+		var e: SimEntity = sim.entities.get(id)
+		return e != null and e.hp > 0)
 	for id in _views.keys():
 		var e: SimEntity = sim.entities.get(id)
 		if e == null:
@@ -145,6 +158,53 @@ func _sim_to_view(e: SimEntity) -> Vector3:
 
 func _on_selection_changed(units: Array[UnitView]) -> void:
 	hud.set_status("" if units.is_empty() else "%d selected" % units.size())
+
+
+# --- designations (design_m3.md §6.1) ------------------------------------------
+
+
+func _on_ground_long_pressed(world_pos: Vector3) -> void:
+	var slot := designations.add_location(
+			Fixed.from_float(world_pos.x + world_offset),
+			Fixed.from_float(world_pos.z + world_offset))
+	hud.set_status("designated %s" % designations.entry(slot)["name"]
+			if slot != -1 else "no free designation slots")
+
+
+func _on_designation_assign(slot: int) -> void:
+	var ids := _selected_entity_ids()
+	var used := designations.assign_group(ids, slot)
+	hud.set_status("%s = %d units" % [designations.entry(used)["name"], ids.size()]
+			if used != -1 else "no free designation slots")
+
+
+func _on_designation_recall(slot: int) -> void:
+	var e: Variant = designations.entry(slot)
+	if e == null:
+		return
+	if e["kind"] == "location":
+		jump_camera_to_sim(e["x"], e["y"])
+	else:
+		var views: Array[UnitView] = []
+		for id: int in e["ids"]:
+			if _views.has(id):
+				views.append(_views[id])
+		if not views.is_empty():
+			controller._select(views)
+
+
+func _selected_entity_ids() -> Array[int]:
+	var ids: Array[int] = []
+	for u in controller.selection:
+		if is_instance_valid(u) and u.entity_id > 0:
+			ids.append(u.entity_id)
+	ids.sort()
+	return ids
+
+
+func jump_camera_to_sim(x: int, y: int) -> void:
+	camera_rig.position = Vector3(Fixed.to_float(x) - world_offset, 0.0,
+			Fixed.to_float(y) - world_offset)
 
 
 func _on_order_issued(command_id: String, units: Array[UnitView],
