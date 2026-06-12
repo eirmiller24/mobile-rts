@@ -77,6 +77,11 @@ const STRUCTURE := {
 	"trains": {"type": "id_list", "kind": "unit", "default": []},
 	"builds_on_vent": {"type": "bool", "default": false},
 	"dummy": {"type": "bool", "default": false},
+	## Where a fresh stronghold's whole nano pool starts (design_m3.md
+	## §4.6) — the game must economically function before the player ever
+	## opens the console.
+	"default_allocation": {"type": "enum",
+		"values": ["idle", "alloy", "flux", "assist"], "default": "alloy"},
 }
 
 const RESOURCE := {
@@ -130,6 +135,7 @@ enum AbilityKind { AURA, TOGGLE_MORPH, BLINK, BUILD }
 enum ResourceKind { ALLOY, FLUX }
 enum BuildMechanic { CAPSULE, WORKER }
 enum Affects { OWN_STRUCTURES }
+enum Allocation { IDLE, ALLOY, FLUX, ASSIST }
 
 
 static func fields_for(kind: String) -> Dictionary:

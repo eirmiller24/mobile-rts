@@ -63,10 +63,7 @@ func _run(seed_value: int) -> Dictionary:
 	for cy in range(20, 45):
 		if cy >= 30 and cy <= 33:
 			continue
-		var wall := SimCommand.new(2, SimCommand.Kind.BUILD)
-		wall.seq = cy
-		wall.params = {"cx": 32, "cy": cy, "type": wall_key}
-		sim.schedule(wall, 2)
+		sim.spawn_structure(2, 32, cy, wall_key)
 
 	sim.schedule(_attack_move(0, squad_a, 26, 16), 5)
 	sim.schedule(_attack_move(1, squad_b, 6, 16), 5)

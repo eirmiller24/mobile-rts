@@ -78,6 +78,27 @@ var foot_x: int = 0
 var foot_y: int = 0
 var foot_w: int = 0
 var foot_h: int = 0
+## Whether this entity currently blocks its footprint on the grid
+## (capsules don't; everything else with a footprint does).
+var blocks: bool = false
+
+## Structure lifecycle (design_m3.md §4.5). Units and resources are
+## always COMPLETE. build_ticks_left is FIXED ticks in both timed states:
+## the capsule countdown while CAPSULE, remaining growth while GROWING
+## (fixed so fractional assist-nano progress accrues exactly).
+enum BuildState { CAPSULE, GROWING, COMPLETE }
+var build_state := BuildState.COMPLETE
+var build_ticks_left: int = 0
+## Assist-nano bonus progress granted this tick (fixed ticks); consumed
+## and reset by the structures phase the same tick.
+var assist_bonus: int = 0
+## Fractional healing accumulator (fixed hp) for regen + repair.
+var heal_acc: int = 0
+## Siphon -> the vent entity it extracts from (0 = none).
+var vent_id: int = 0
+## Stronghold nanomachine allocation: [alloy, flux, assist] (sum <= the
+## catalog nano_pool; the remainder idles).
+var nano_alloc: Array[int] = [0, 0, 0]
 
 
 func is_unit() -> bool:
@@ -88,6 +109,11 @@ func is_resource() -> bool:
 	return kind == Kind.RESOURCE
 
 
+## Airborne (a flying capsule): only attackers with hits_air can hit it.
+func is_aerial() -> bool:
+	return kind == Kind.STRUCTURE and build_state == BuildState.CAPSULE
+
+
 func hash_into(h: int) -> int:
 	for v: int in [id, player, kind, type_key, x, y, radius, step, hp, max_hp,
 			int(targetable), damage, attack_range, acquire_range,
@@ -95,7 +121,9 @@ func hash_into(h: int) -> int:
 			sight, int(hits_air), attack_class, armor_class, damage_taken,
 			amount, resource_kind,
 			goal_key, done_goal_key, path_i, goal_d2_best, stall,
-			foot_x, foot_y, foot_w, foot_h]:
+			foot_x, foot_y, foot_w, foot_h, int(blocks),
+			build_state, build_ticks_left, assist_bonus, heal_acc, vent_id,
+			nano_alloc[0], nano_alloc[1], nano_alloc[2]]:
 		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF
 	var proc_keys := procs.keys()
 	proc_keys.sort()

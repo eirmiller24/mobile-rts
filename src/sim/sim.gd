@@ -113,7 +113,8 @@ func _init(seed_value: int, p_catalog: CompiledCatalog, map: MapData) -> void:
 			"unit":
 				spawn_unit(obj["player"], obj["x"], obj["y"], obj["type_key"])
 			"structure":
-				spawn_structure(obj["player"], obj["cx"], obj["cy"], obj["type_key"])
+				spawn_structure(obj["player"], obj["cx"], obj["cy"],
+						obj["type_key"], obj["completed"])
 			"resource":
 				spawn_resource(obj["cx"], obj["cy"], obj["type_key"])
 	_recompute_vision()
@@ -135,9 +136,11 @@ func schedule(cmd: SimCommand, at_tick: int = -1) -> void:
 func step() -> void:
 	_rebuild_aura_index()
 	_execute_scheduled_commands()
+	_economy_system()
 	_run_flow_builds()
 	_movement_system()
 	_combat_system()
+	_structures_system()
 	_reap()
 	tick += 1
 	if tick % VISION_PERIOD == 0:
@@ -168,18 +171,35 @@ func spawn_unit(player: int, x: int, y: int, type_key: int) -> int:
 
 ## Footprint comes from the catalog, in pathing cells (drawn walls are
 ## 1x1-cell structures; nothing assumes a structure is at least a tile
-## big). Returns 0 if any footprint cell is blocked.
-func spawn_structure(player: int, cx: int, cy: int, type_key: int) -> int:
+## big). Returns 0 if any footprint cell is blocked. `completed` false
+## starts the structure GROWING (10% hp, full build time).
+func spawn_structure(player: int, cx: int, cy: int, type_key: int,
+		completed: bool = true) -> int:
 	assert(catalog.kind_of(type_key) == "structure")
 	var s := catalog.sim_of(type_key)
-	var w: int = s["foot_w"]
-	var h: int = s["foot_h"]
-	if not grid.rect_free(cx, cy, w, h):
+	if not grid.rect_free(cx, cy, s["foot_w"], s["foot_h"]):
 		return 0
+	return _spawn_structure_entity(player, cx, cy, type_key, completed, 0).id
+
+
+## Places a structure without checking occupancy — callers validate
+## (spawn_structure checks rect_free; the BUILD path has its own
+## vision-gated rules, and vent builds deliberately overlap the vent).
+func _spawn_structure_entity(player: int, cx: int, cy: int, type_key: int,
+		completed: bool, vent_id: int) -> SimEntity:
+	var s := catalog.sim_of(type_key)
 	var e := _place_footprint(player, cx, cy, type_key, s)
 	e.kind = SimEntity.Kind.STRUCTURE
 	_copy_combat_stats(e, s)
-	return e.id
+	e.vent_id = vent_id
+	if completed:
+		e.build_state = SimEntity.BuildState.COMPLETE
+		_on_structure_complete(e)
+	else:
+		e.build_state = SimEntity.BuildState.GROWING
+		e.build_ticks_left = Fixed.from_int(s["build_time"])
+		e.hp = maxi(1, e.max_hp / 10)
+	return e
 
 
 ## Resource nodes block their footprint, are untargetable, and never act
@@ -216,6 +236,7 @@ func _place_footprint(player: int, cx: int, cy: int, type_key: int,
 	# Circle approximation of the footprint for range checks.
 	e.radius = mini(e.foot_w, e.foot_h) * SimGrid.CELL / 2
 	grid.block_rect(cx, cy, e.foot_w, e.foot_h)
+	e.blocks = true
 	entities[e.id] = e
 	return e
 
@@ -269,18 +290,160 @@ func _execute(cmd: SimCommand) -> void:
 				e.goal_key = -1
 				e.target_id = 0
 		SimCommand.Kind.BUILD:
-			# Interim debug form: place a complete structure of a catalog
-			# type. The vision-gated lifecycle build replaces this in M3
-			# step 4 (design_m3.md §4.5).
-			spawn_structure(cmd.player_id,
-					cmd.params.get("cx", 0), cmd.params.get("cy", 0),
-					cmd.params.get("type", -1))
+			_execute_build(cmd)
+		SimCommand.Kind.ALLOCATE_ECONOMY:
+			_execute_allocate(cmd)
 		SimCommand.Kind.DEBUG_SPAWN:
 			spawn_unit(cmd.player_id,
 					cmd.params.get("x", 0), cmd.params.get("y", 0),
 					cmd.params.get("type", -1))
 		_:
 			pass # Remaining kinds land in M3+.
+
+
+# --- BUILD (design_m3.md §4.5) ------------------------------------------------
+
+
+## Vision-gated build validation. Commands are requests: every failed
+## check is a silent no-op — the UI predicts validity, and a stale
+## prediction must not crash lockstep. Cells under fog are taken on faith;
+## the capsule discovers the truth at landing.
+func _execute_build(cmd: SimCommand) -> void:
+	var player: SimPlayer = players.get(cmd.player_id)
+	if player == null or cmd.targets.is_empty():
+		return
+	var builder: SimEntity = entities.get(cmd.targets[0])
+	if not _functional(builder) or builder.player != cmd.player_id:
+		return
+	var type: int = cmd.params.get("type", -1)
+	if type < 0 or type >= catalog.size() or catalog.kind_of(type) != "structure":
+		return
+	if not _build_ability_for(builder, type):
+		return
+	var s := catalog.sim_of(type)
+	var w: int = s["foot_w"]
+	var h: int = s["foot_h"]
+	var cx: int = cmd.params.get("cx", -1)
+	var cy: int = cmd.params.get("cy", -1)
+	if cx < 0 or cy < 0 or cx + w > grid.width or cy + h > grid.height:
+		return
+
+	# Siphon placement: the footprint must exactly cover a free vent
+	# (instead of requiring free cells — the vent itself blocks them).
+	var vent_id := 0
+	if s["builds_on_vent"]:
+		vent_id = _vent_at(cx, cy, w, h)
+		if vent_id == 0 or _siphon_on(vent_id) != 0:
+			return
+
+	var site_x := cx * SimGrid.CELL + w * SimGrid.CELL / 2
+	var site_y := cy * SimGrid.CELL + h * SimGrid.CELL / 2
+	var inside := in_flagged_aura(cmd.player_id, "territory", site_x, site_y)
+	var cost_alloy: int = s["cost_alloy"] + (0 if inside else s["capsule_cost_alloy"])
+	var cost_flux: int = s["cost_flux"]
+	if player.alloy < Fixed.from_int(cost_alloy) \
+			or player.flux < Fixed.from_int(cost_flux):
+		return
+
+	if not s["builds_on_vent"]:
+		if inside:
+			# Own territory is always visible (a structure's sight covers
+			# its aura), so the instant-GROWING path is fully validated.
+			if not grid.rect_free(cx, cy, w, h):
+				return
+		else:
+			# You can never build on ground you can SEE is occupied; you
+			# can always TRY ground you can't see.
+			for fy in range(cy, cy + h):
+				for fx in range(cx, cx + w):
+					if is_cell_visible(cmd.player_id, fx, fy) \
+							and grid.is_blocked(fx, fy):
+						return
+
+	player.alloy -= Fixed.from_int(cost_alloy)
+	player.flux -= Fixed.from_int(cost_flux)
+	if inside:
+		_spawn_structure_entity(cmd.player_id, cx, cy, type, false, vent_id)
+	else:
+		_spawn_capsule(cmd.player_id, cx, cy, type, vent_id)
+
+
+## The builder's first build ability whose `structures` list sells `type`
+## (design_m3.md §4.5); 0 if it has none.
+func _build_ability_for(builder: SimEntity, type: int) -> bool:
+	for ak in _abilities_of(builder):
+		var ab := catalog.sim_of(ak)
+		if ab["ability_kind"] == CatalogSchema.AbilityKind.BUILD \
+				and type in ab["structures"]:
+			return true
+	return false
+
+
+## The flux vent whose footprint exactly matches the rect, or 0.
+func _vent_at(cx: int, cy: int, w: int, h: int) -> int:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.is_resource() and e.resource_kind == CatalogSchema.ResourceKind.FLUX \
+				and e.foot_x == cx and e.foot_y == cy \
+				and e.foot_w == w and e.foot_h == h:
+			return id
+	return 0
+
+
+## A live siphon (any build state — a growing one claims the vent too)
+## linked to this vent, or 0.
+func _siphon_on(vent_id: int) -> int:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind == SimEntity.Kind.STRUCTURE and e.hp > 0 and e.vent_id == vent_id:
+			return id
+	return 0
+
+
+## An airborne capsule at the target site: does not block pathing, cannot
+## act, projects no sight; targetable but aerial. No timeout and no recall
+## (§4.5).
+func _spawn_capsule(player: int, cx: int, cy: int, type_key: int,
+		vent_id: int) -> void:
+	var s := catalog.sim_of(type_key)
+	var e := SimEntity.new()
+	e.id = _next_entity_id
+	_next_entity_id += 1
+	e.kind = SimEntity.Kind.STRUCTURE
+	e.type_key = type_key
+	e.player = player
+	e.foot_x = cx
+	e.foot_y = cy
+	e.foot_w = s["foot_w"]
+	e.foot_h = s["foot_h"]
+	e.x = cx * SimGrid.CELL + e.foot_w * SimGrid.CELL / 2
+	e.y = cy * SimGrid.CELL + e.foot_h * SimGrid.CELL / 2
+	e.radius = mini(e.foot_w, e.foot_h) * SimGrid.CELL / 2
+	_copy_combat_stats(e, s)
+	e.damage = 0 # capsules never fight, whatever the finished form does
+	e.hp = catalog.globals["capsule_hp"]
+	e.build_state = SimEntity.BuildState.CAPSULE
+	e.build_ticks_left = Fixed.from_int(catalog.globals["capsule_time"])
+	e.vent_id = vent_id
+	entities[e.id] = e
+
+
+func _execute_allocate(cmd: SimCommand) -> void:
+	if cmd.targets.is_empty():
+		return
+	var e: SimEntity = entities.get(cmd.targets[0])
+	if not _functional(e) or e.player != cmd.player_id \
+			or e.kind != SimEntity.Kind.STRUCTURE:
+		return
+	var pool: int = catalog.sim_of(e.type_key)["nano_pool"]
+	if pool <= 0:
+		return
+	var a: int = cmd.params.get("alloy", 0)
+	var f: int = cmd.params.get("flux", 0)
+	var s: int = cmd.params.get("assist", 0)
+	if a < 0 or f < 0 or s < 0 or a + f + s > pool:
+		return # rejected outright (§4.9), never clamped silently
+	e.nano_alloc = [a, f, s]
 
 
 ## The command's own live units, ascending id.
@@ -917,10 +1080,14 @@ func _combat_system() -> void:
 		var e: SimEntity = entities[id]
 		if e.hp <= 0 or e.damage <= 0:
 			continue
+		# Growing structures and capsules cannot fight (§4.5).
+		if e.kind == SimEntity.Kind.STRUCTURE \
+				and e.build_state != SimEntity.BuildState.COMPLETE:
+			continue
 		if e.cooldown > 0:
 			e.cooldown -= 1
 		var t: SimEntity = entities.get(e.target_id) if e.target_id != 0 else null
-		if t != null and (t.hp <= 0 or not t.targetable or t.player == e.player
+		if t != null and (t.hp <= 0 or not _can_target(e, t)
 				or not _in_range(e, t, e.acquire_range, false)):
 			t = null
 			e.target_id = 0
@@ -952,6 +1119,17 @@ func _engaged(e: SimEntity) -> bool:
 			and _in_range(e, t, e.attack_range, true)
 
 
+## Targetability rules in one place: enemies only, untargetables never
+## (resources/scenery), and aerial capsules only for hits_air attackers —
+## melee can't bite the sky (§4.5).
+func _can_target(e: SimEntity, t: SimEntity) -> bool:
+	if not t.targetable or t.player == e.player:
+		return false
+	if t.is_aerial() and not e.hits_air:
+		return false
+	return true
+
+
 ## Nearest live enemy within acquire range; ties go to the lowest id.
 func _acquire(e: SimEntity) -> SimEntity:
 	var best: SimEntity = null
@@ -959,7 +1137,7 @@ func _acquire(e: SimEntity) -> SimEntity:
 	var reach := (e.acquire_range >> BUCKET_SHIFT) + 1
 	for nid in _bucket_neighbors(e, reach, 0):
 		var n: SimEntity = entities[nid]
-		if n.hp <= 0 or not n.targetable or n.player == e.player:
+		if n.hp <= 0 or not _can_target(e, n):
 			continue
 		var dx := n.x - e.x
 		var dy := n.y - e.y
@@ -987,19 +1165,288 @@ func _reap() -> void:
 		var e: SimEntity = entities[id]
 		if e.hp > 0:
 			continue
-		if not e.is_unit():
+		if e.blocks:
 			grid.unblock_rect(e.foot_x, e.foot_y, e.foot_w, e.foot_h)
 		entities.erase(id)
+
+
+# --- nanomachine economy (design_m3.md §4.6) ----------------------------------
+
+
+## Per-stronghold income recorded for the Economy tab (derived, never
+## hashed): stronghold id -> {"alloy": fixed/tick, "flux": fixed/tick,
+## "assist_used": int, "idle": int}. The UI's "allocation idle: no
+## deposits in range" warning reads the gap between allocation and this.
+var income: Dictionary = {}
+
+
+func _economy_system() -> void:
+	income.clear()
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind != SimEntity.Kind.STRUCTURE or not _functional(e):
+			continue
+		var s := catalog.sim_of(e.type_key)
+		var pool: int = s["nano_pool"]
+		if pool <= 0:
+			continue
+		var player: SimPlayer = players.get(e.player)
+		if player == null:
+			continue
+		var r := _territory_radius(e)
+		var mined_alloy := _mine(e, player, r, CatalogSchema.ResourceKind.ALLOY,
+				catalog.globals["alloy_rate"], e.nano_alloc[0])
+		var mined_flux := _mine(e, player, r, CatalogSchema.ResourceKind.FLUX,
+				catalog.globals["flux_rate"], e.nano_alloc[1])
+		var assist_used := _assist(e, r, e.nano_alloc[2])
+		income[id] = {
+			"alloy": mined_alloy, "flux": mined_flux,
+			"assist_used": assist_used,
+			"idle": pool - e.nano_alloc[0] - e.nano_alloc[1] - e.nano_alloc[2],
+		}
+
+
+## The radius of this structure's own territory aura (its reach for
+## mining/assist is its own circle, not the union — §4.3), 0 if none.
+func _territory_radius(e: SimEntity) -> int:
+	for ak in _abilities_of(e):
+		var ab := catalog.sim_of(ak)
+		if ab["ability_kind"] == CatalogSchema.AbilityKind.AURA \
+				and "territory" in ab["flags"]:
+			return ab["radius"]
+	return 0
+
+
+## Extract up to rate x nanos this tick from eligible sources inside the
+## stronghold's circle, in ascending node id, each capped by its
+## throughput. Returns the amount mined (fixed). For ALLOY the sources
+## are deposit nodes; for FLUX they are this player's COMPLETE siphons
+## (drawing from their linked vents).
+func _mine(sh: SimEntity, player: SimPlayer, r: int, res_kind: int,
+		rate: int, nanos: int) -> int:
+	if nanos <= 0 or r <= 0:
+		return 0
+	var demand := (rate / TICK_RATE) * nanos
+	var mined := 0
+	for id in _sorted_ids():
+		if demand <= 0:
+			break
+		var node: SimEntity = null
+		if res_kind == CatalogSchema.ResourceKind.ALLOY:
+			var n: SimEntity = entities[id]
+			if not n.is_resource() or n.resource_kind != res_kind:
+				continue
+			if not _circle_covers(sh.x, sh.y, r, n.x, n.y):
+				continue
+			node = n
+		else:
+			var siphon: SimEntity = entities[id]
+			if siphon.kind != SimEntity.Kind.STRUCTURE or siphon.vent_id == 0 \
+					or siphon.player != sh.player or not _functional(siphon):
+				continue
+			if not _circle_covers(sh.x, sh.y, r, siphon.x, siphon.y):
+				continue
+			node = entities.get(siphon.vent_id)
+			if node == null:
+				continue
+		if node.amount <= 0:
+			continue
+		var cap: int = catalog.sim_of(node.type_key)["throughput"] / TICK_RATE
+		var draw := mini(demand, mini(cap, node.amount))
+		node.amount -= draw
+		demand -= draw
+		mined += draw
+	if res_kind == CatalogSchema.ResourceKind.ALLOY:
+		player.alloy += mined
+	else:
+		player.flux += mined
+	return mined
+
+
+## Distribute assist nanos: construction before repair, fill one structure
+## then the next, ascending id (§4.6). Construction grants assist_bonus
+## (consumed by the structures phase this tick); repair feeds heal_acc.
+## Returns how many nanos found work.
+func _assist(sh: SimEntity, r: int, nanos: int) -> int:
+	if nanos <= 0 or r <= 0:
+		return 0
+	var growing: Array[SimEntity] = []
+	var damaged: Array[SimEntity] = []
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind != SimEntity.Kind.STRUCTURE or e.hp <= 0 or e.player != sh.player:
+			continue
+		if not _circle_covers(sh.x, sh.y, r, e.x, e.y):
+			continue
+		if e.build_state == SimEntity.BuildState.GROWING:
+			growing.append(e)
+		elif e.build_state == SimEntity.BuildState.COMPLETE and e.hp < e.max_hp:
+			damaged.append(e)
+	var assist_rate: int = catalog.globals["assist_rate"]
+	var repair_per_tick: int = catalog.globals["repair_rate"] / TICK_RATE
+	var used := 0
+	var gi := 0
+	var di := 0
+	for i in nanos:
+		# A growing structure absorbs bonus until natural progress (ONE)
+		# plus granted bonus covers what's left.
+		while gi < growing.size() \
+				and growing[gi].build_ticks_left - Fixed.ONE - growing[gi].assist_bonus <= 0:
+			gi += 1
+		if gi < growing.size():
+			growing[gi].assist_bonus += assist_rate
+			used += 1
+			continue
+		while di < damaged.size() \
+				and damaged[di].hp + Fixed.to_int(damaged[di].heal_acc) >= damaged[di].max_hp:
+			di += 1
+		if di < damaged.size():
+			damaged[di].heal_acc += repair_per_tick
+			used += 1
+	return used
+
+
+# --- structure lifecycle (design_m3.md §4.5) -----------------------------------
+
+
+func _structures_system() -> void:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind != SimEntity.Kind.STRUCTURE or e.hp <= 0:
+			continue
+		match e.build_state:
+			SimEntity.BuildState.CAPSULE:
+				_capsule_tick(e)
+			SimEntity.BuildState.GROWING:
+				_grow_tick(e)
+			SimEntity.BuildState.COMPLETE:
+				_regen_tick(e)
+
+
+func _capsule_tick(e: SimEntity) -> void:
+	if e.build_ticks_left > 0:
+		e.build_ticks_left -= Fixed.ONE
+		if e.build_ticks_left > 0:
+			return
+	# Trying to land (and retrying every tick while hovering).
+	if e.vent_id != 0:
+		# The vent blocks its own cells, so the static-blocker rule is
+		# replaced by "is the vent still free?" — another siphon may have
+		# claimed it mid-flight.
+		if _siphon_on_excluding(e.vent_id, e.id) != 0:
+			e.hp = 0 # destroyed, nothing refunds
+			return
+	else:
+		for fy in range(e.foot_y, e.foot_y + e.foot_h):
+			for fx in range(e.foot_x, e.foot_x + e.foot_w):
+				if grid.is_blocked(fx, fy):
+					e.hp = 0 # landed on a static blocker: the stake is lost
+					return
+		if _units_on_footprint(e):
+			return # hover: stay airborne, retry next tick
+	# Land and start growing.
+	grid.block_rect(e.foot_x, e.foot_y, e.foot_w, e.foot_h)
+	e.blocks = true
+	e.build_state = SimEntity.BuildState.GROWING
+	e.hp = maxi(1, e.max_hp / 10)
+	e.build_ticks_left = Fixed.from_int(catalog.sim_of(e.type_key)["build_time"])
+
+
+func _siphon_on_excluding(vent_id: int, self_id: int) -> int:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.id != self_id and e.kind == SimEntity.Kind.STRUCTURE \
+				and e.hp > 0 and e.vent_id == vent_id:
+			return id
+	return 0
+
+
+func _units_on_footprint(e: SimEntity) -> bool:
+	var x0 := e.foot_x * SimGrid.CELL
+	var y0 := e.foot_y * SimGrid.CELL
+	var x1 := (e.foot_x + e.foot_w) * SimGrid.CELL
+	var y1 := (e.foot_y + e.foot_h) * SimGrid.CELL
+	for id in entities:
+		var u: SimEntity = entities[id]
+		if not u.is_unit() or u.hp <= 0:
+			continue
+		var px := clampi(u.x, x0, x1)
+		var py := clampi(u.y, y0, y1)
+		if absi(u.x - px) < u.radius and absi(u.y - py) < u.radius:
+			return true
+	return false
+
+
+## Growth: 1 tick/tick plus assist bonus; hp ramps linearly from 10% so
+## attacking a half-built nest meets half the hp. Damage taken during
+## growth persists (the ramp adds deltas, it doesn't set totals).
+func _grow_tick(e: SimEntity) -> void:
+	var total := Fixed.from_int(catalog.sim_of(e.type_key)["build_time"])
+	var progress := Fixed.ONE + e.assist_bonus
+	e.assist_bonus = 0
+	var prev := e.build_ticks_left
+	e.build_ticks_left = maxi(0, prev - progress)
+	e.hp = mini(e.max_hp,
+			e.hp + _ramp_hp(e.max_hp, total, e.build_ticks_left) - _ramp_hp(e.max_hp, total, prev))
+	if e.build_ticks_left == 0:
+		e.build_state = SimEntity.BuildState.COMPLETE
+		_on_structure_complete(e)
+
+
+## Target hp at a given remaining-build time: 10% of max at the start,
+## max when done (integer math, monotone in progress).
+func _ramp_hp(max_hp: int, total: int, left: int) -> int:
+	var base := maxi(1, max_hp / 10)
+	if total <= 0:
+		return max_hp
+	return base + (max_hp - base) * (total - left) / total
+
+
+## Fires exactly once per structure (§4.5). Auras, bandwidth, and sight
+## need no wiring — they're evaluated from live state and start answering
+## differently the moment build_state flips.
+func _on_structure_complete(e: SimEntity) -> void:
+	var s := catalog.sim_of(e.type_key)
+	var pool: int = s["nano_pool"]
+	if pool > 0:
+		match s["default_allocation"]:
+			CatalogSchema.Allocation.ALLOY:
+				e.nano_alloc = [pool, 0, 0]
+			CatalogSchema.Allocation.FLUX:
+				e.nano_alloc = [0, pool, 0]
+			CatalogSchema.Allocation.ASSIST:
+				e.nano_alloc = [0, 0, pool]
+			_:
+				e.nano_alloc = [0, 0, 0]
+
+
+## Aura regen plus repair-nano healing, both accrued fractionally in
+## heal_acc and applied in whole points.
+func _regen_tick(e: SimEntity) -> void:
+	if e.hp >= e.max_hp:
+		e.heal_acc = 0
+		return
+	e.heal_acc += eff_hp_regen(e) / TICK_RATE
+	if e.heal_acc >= Fixed.ONE:
+		var whole := Fixed.to_int(e.heal_acc)
+		e.hp = mini(e.max_hp, e.hp + whole)
+		e.heal_acc -= Fixed.from_int(whole)
 
 
 # --- auras and territory (design_m3.md §4.3) ---------------------------------
 
 
 ## A functional entity acts, projects auras and sight, and counts for
-## bandwidth: live units and COMPLETE structures. (Growing structures and
-## capsules join this gate in the lifecycle step; resources never qualify.)
+## bandwidth: live units and COMPLETE structures. Growing structures,
+## capsules, and resources never qualify (§4.5: a nest dropped deep in
+## fog grows blind).
 func _functional(e: SimEntity) -> bool:
-	return e != null and e.hp > 0 and not e.is_resource()
+	if e == null or e.hp <= 0 or e.is_resource():
+		return false
+	if e.kind == SimEntity.Kind.STRUCTURE \
+			and e.build_state != SimEntity.BuildState.COMPLETE:
+		return false
+	return true
 
 
 func _abilities_of(e: SimEntity) -> PackedInt32Array:
