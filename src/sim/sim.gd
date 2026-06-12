@@ -18,6 +18,11 @@ extends RefCounted
 const TICK_RATE := 20
 ## Commands are scheduled this many ticks after issue (lockstep latency).
 const COMMAND_DELAY := 3
+## Fog recompute cadence in ticks (design_m3.md §4.4): tick-based so every
+## lockstep peer computes identical visibility maps. Worst-case staleness
+## is 200 ms — invisible at fog scale; the relief valve if profiling
+## disagrees with the budget.
+const VISION_PERIOD := 4
 ## Orders for this many units or fewer get per-unit A* paths; larger
 ## groups share one flow field per destination.
 const SMALL_GROUP := 3
@@ -79,6 +84,15 @@ var _flow_version: int = -1
 var _flow_builds: Array = []
 ## Vector2i bucket -> Array[int] entity ids, rebuilt each tick.
 var _buckets: Dictionary = {}
+## Aura source index (design_m3.md §4.3): player -> ability type_key ->
+## Array of [owner_id, x, y, radius]. Derived data rebuilt every tick in
+## ascending owner id — never hashed, like buckets; the per-tick rebuild
+## is also what makes mobile aura owners free.
+var _aura_sources: Dictionary = {}
+## Per-player visibility at build-tile resolution (§4.4): player ->
+## PackedByteArray (1 = visible). Derived from hashed state on a fixed
+## tick cadence, so it is itself deterministic but never hashed.
+var _vision: Dictionary = {}
 
 
 func _init(seed_value: int, p_catalog: CompiledCatalog, map: MapData) -> void:
@@ -102,6 +116,7 @@ func _init(seed_value: int, p_catalog: CompiledCatalog, map: MapData) -> void:
 				spawn_structure(obj["player"], obj["cx"], obj["cy"], obj["type_key"])
 			"resource":
 				spawn_resource(obj["cx"], obj["cy"], obj["type_key"])
+	_recompute_vision()
 
 
 ## Schedule a command for execution. Lockstep peers must schedule identical
@@ -114,14 +129,19 @@ func schedule(cmd: SimCommand, at_tick: int = -1) -> void:
 	_command_queue[t].append(cmd)
 
 
-## Advance the sim by exactly one tick.
+## Advance the sim by exactly one tick. Tick order (design_m3.md §4):
+## commands -> economy -> production -> movement -> combat -> structures
+## -> reap -> vision (every VISION_PERIOD ticks).
 func step() -> void:
+	_rebuild_aura_index()
 	_execute_scheduled_commands()
 	_run_flow_builds()
 	_movement_system()
 	_combat_system()
 	_reap()
 	tick += 1
+	if tick % VISION_PERIOD == 0:
+		_recompute_vision()
 
 
 ## Scenario setup helper (map load / tests). Stats come from the catalog;
@@ -970,6 +990,186 @@ func _reap() -> void:
 		if not e.is_unit():
 			grid.unblock_rect(e.foot_x, e.foot_y, e.foot_w, e.foot_h)
 		entities.erase(id)
+
+
+# --- auras and territory (design_m3.md §4.3) ---------------------------------
+
+
+## A functional entity acts, projects auras and sight, and counts for
+## bandwidth: live units and COMPLETE structures. (Growing structures and
+## capsules join this gate in the lifecycle step; resources never qualify.)
+func _functional(e: SimEntity) -> bool:
+	return e != null and e.hp > 0 and not e.is_resource()
+
+
+func _abilities_of(e: SimEntity) -> PackedInt32Array:
+	if e.type_key == -1 or e.is_resource():
+		return PackedInt32Array()
+	return catalog.sim_of(e.type_key).get("abilities", PackedInt32Array())
+
+
+func _rebuild_aura_index() -> void:
+	_aura_sources.clear()
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if not _functional(e):
+			continue
+		for ak in _abilities_of(e):
+			var ab := catalog.sim_of(ak)
+			if ab["ability_kind"] != CatalogSchema.AbilityKind.AURA:
+				continue
+			if not _aura_sources.has(e.player):
+				_aura_sources[e.player] = {}
+			var by_ability: Dictionary = _aura_sources[e.player]
+			if not by_ability.has(ak):
+				by_ability[ak] = []
+			by_ability[ak].append([e.id, e.x, e.y, ab["radius"]])
+
+
+## Is the point inside any active circle of this specific aura?
+func in_aura(player: int, ability_key: int, x: int, y: int) -> bool:
+	var by_ability: Dictionary = _aura_sources.get(player, {})
+	for src: Array in by_ability.get(ability_key, []):
+		if _circle_covers(src[1], src[2], src[3], x, y):
+			return true
+	return false
+
+
+## Flag form for engine consumers ("in player P's territory"): each flag
+## resolved to its granting ability ids at catalog compile time.
+func in_flagged_aura(player: int, flag: String, x: int, y: int) -> bool:
+	for ak in catalog.abilities_with_flag(flag):
+		if in_aura(player, ak, x, y):
+			return true
+	return false
+
+
+func _circle_covers(cx: int, cy: int, r: int, x: int, y: int) -> bool:
+	var dx := x - cx
+	var dy := y - cy
+	if absi(dx) > r or absi(dy) > r:
+		return false
+	return Fixed.mul(dx, dx) + Fixed.mul(dy, dy) <= Fixed.mul(r, r)
+
+
+## Effective incoming-damage multiplier for `e` (fixed): catalog base,
+## improved by the best covering aura (lower is better). Stateless — a
+## structure goes feral when its stronghold dies and recovers when a relay
+## completes with no state transitions anywhere (§4.3).
+func eff_damage_taken(e: SimEntity) -> int:
+	var best := e.damage_taken
+	for v in _modifier_values(e, "damage_taken"):
+		best = mini(best, v)
+	return best
+
+
+## Effective hp regen for `e` (fixed hp/sec; base is 0 — regen only exists
+## under an aura in M3).
+func eff_hp_regen(e: SimEntity) -> int:
+	var best := 0
+	for v in _modifier_values(e, "hp_regen"):
+		best = maxi(best, v)
+	return best
+
+
+## Values of modifier `key` from every aura covering `e` whose `affects`
+## matches it. The same ability id never stacks with itself (circles of
+## one ability contribute one value), and best-wins is order-independent.
+func _modifier_values(e: SimEntity, key: String) -> Array[int]:
+	var values: Array[int] = []
+	var by_ability: Dictionary = _aura_sources.get(e.player, {})
+	for ak: int in by_ability:
+		var ab := catalog.sim_of(ak)
+		var mods: Dictionary = ab["modifiers"]
+		if not mods.has(key):
+			continue
+		if ab["affects"] == CatalogSchema.Affects.OWN_STRUCTURES \
+				and e.kind != SimEntity.Kind.STRUCTURE:
+			continue
+		for src: Array in by_ability[ak]:
+			if _circle_covers(src[1], src[2], src[3], e.x, e.y):
+				values.append(mods[key])
+				break
+	return values
+
+
+# --- vision and fog of war (design_m3.md §4.4) --------------------------------
+
+
+## A build tile is visible to a player if its center is within `sight` of
+## any of the player's functional entities. Two-state fog: terrain and
+## resource nodes are always known; fog hides other players' dynamic
+## entities. Derived data — recomputed from hashed state on a fixed
+## cadence, never hashed itself.
+func _recompute_vision() -> void:
+	var pids := players.keys()
+	pids.sort()
+	for pid: int in pids:
+		var vis := PackedByteArray()
+		vis.resize(grid.tiles_w * grid.tiles_h)
+		for id in _sorted_ids():
+			var e: SimEntity = entities[id]
+			if e.player != pid or not _functional(e) or e.sight <= 0:
+				continue
+			_stamp_sight(vis, e)
+		_vision[pid] = vis
+
+
+func _stamp_sight(vis: PackedByteArray, e: SimEntity) -> void:
+	var r := e.sight
+	var tx0 := maxi(0, Fixed.to_int(e.x - r))
+	var tx1 := mini(grid.tiles_w - 1, Fixed.to_int(e.x + r))
+	var ty0 := maxi(0, Fixed.to_int(e.y - r))
+	var ty1 := mini(grid.tiles_h - 1, Fixed.to_int(e.y + r))
+	var r2 := Fixed.mul(r, r)
+	for ty in range(ty0, ty1 + 1):
+		var dy := ty * Fixed.ONE + Fixed.HALF - e.y
+		var dy2 := Fixed.mul(dy, dy)
+		var row := ty * grid.tiles_w
+		for tx in range(tx0, tx1 + 1):
+			var dx := tx * Fixed.ONE + Fixed.HALF - e.x
+			if Fixed.mul(dx, dx) + dy2 <= r2:
+				vis[row + tx] = 1
+
+
+func is_tile_visible(player: int, tx: int, ty: int) -> bool:
+	if tx < 0 or ty < 0 or tx >= grid.tiles_w or ty >= grid.tiles_h:
+		return false
+	var vis: PackedByteArray = _vision.get(player, PackedByteArray())
+	if vis.is_empty():
+		return false
+	return vis[ty * grid.tiles_w + tx] == 1
+
+
+func is_cell_visible(player: int, cx: int, cy: int) -> bool:
+	return is_tile_visible(player,
+			cx / SimGrid.PATH_SUBDIV, cy / SimGrid.PATH_SUBDIV)
+
+
+## Batch read for the view/minimap: one byte per build tile, row-major.
+func vision_of(player: int) -> PackedByteArray:
+	return _vision.get(player, PackedByteArray())
+
+
+# --- bandwidth (design_m3.md §4.1) --------------------------------------------
+
+
+## {"used": int, "provided": int}. Derived on query, never stored, so it
+## can never drift from the truth it summarizes. Used counts live units
+## (plus queued trainees once production lands); provided counts COMPLETE
+## structures.
+func bandwidth_of(player: int) -> Dictionary:
+	var used := 0
+	var provided := 0
+	for id in entities:
+		var e: SimEntity = entities[id]
+		if e.player != player or not _functional(e):
+			continue
+		if e.is_unit():
+			used += catalog.sim_of(e.type_key)["bandwidth"]
+		elif e.kind == SimEntity.Kind.STRUCTURE:
+			provided += catalog.sim_of(e.type_key)["bandwidth_provided"]
+	return {"used": used, "provided": provided}
 
 
 # --- hashing ----------------------------------------------------------------
