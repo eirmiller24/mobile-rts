@@ -16,6 +16,9 @@ enum Kind {
 	SET_TACTIC,
 	ALLOCATE_ECONOMY,
 	DEBUG_SPAWN,
+	TRAIN,
+	CANCEL,
+	SET_RALLY,
 }
 
 var player_id: int

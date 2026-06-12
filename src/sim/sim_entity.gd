@@ -100,6 +100,28 @@ var vent_id: int = 0
 ## catalog nano_pool; the remainder idles).
 var nano_alloc: Array[int] = [0, 0, 0]
 
+## Production (design_m3.md §4.7): queued trainees [{type: type_key,
+## left: int ticks}], head builds; rally point (0,0 sentinel = unset).
+var train_queue: Array[Dictionary] = []
+var rally_x: int = 0
+var rally_y: int = 0
+
+## Commanded abilities (design_m3.md §4.8). morph_ticks_left > 0 =
+## mid-transition (immobile, can't act); `morphed` = the toggled form's
+## stat overrides are applied. underground_ticks_left > 0 = burrowing
+## (no collision, untargetable, surfaces at surface_x/y when it hits 0).
+var morphed: bool = false
+var morph_ticks_left: int = 0
+var underground_ticks_left: int = 0
+var surface_x: int = 0
+var surface_y: int = 0
+## ability type_key (int) -> ticks until ready again.
+var ability_cooldowns: Dictionary = {}
+
+
+func is_underground() -> bool:
+	return underground_ticks_left > 0
+
 
 func is_unit() -> bool:
 	return kind == Kind.UNIT
@@ -123,8 +145,18 @@ func hash_into(h: int) -> int:
 			goal_key, done_goal_key, path_i, goal_d2_best, stall,
 			foot_x, foot_y, foot_w, foot_h, int(blocks),
 			build_state, build_ticks_left, assist_bonus, heal_acc, vent_id,
-			nano_alloc[0], nano_alloc[1], nano_alloc[2]]:
+			nano_alloc[0], nano_alloc[1], nano_alloc[2],
+			rally_x, rally_y, int(morphed), morph_ticks_left,
+			underground_ticks_left, surface_x, surface_y]:
 		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF
+	for q in train_queue:
+		h = (h * 31 + q["type"]) & 0x7FFFFFFFFFFFFFF
+		h = (h * 31 + q["left"]) & 0x7FFFFFFFFFFFFFF
+	var cd_keys := ability_cooldowns.keys()
+	cd_keys.sort()
+	for key in cd_keys:
+		h = (h * 31 + key) & 0x7FFFFFFFFFFFFFF
+		h = (h * 31 + ability_cooldowns[key]) & 0x7FFFFFFFFFFFFFF
 	var proc_keys := procs.keys()
 	proc_keys.sort()
 	for key in proc_keys:

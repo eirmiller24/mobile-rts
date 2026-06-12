@@ -19,7 +19,7 @@ const FAIL_AVG_MS := 200.0
 
 
 func _initialize() -> void:
-	var sim := TestSupport.sim(0xBEEF, 64, 64)
+	var sim := TestSupport.sim(0xBEEF, 64, 64, [0, 1])
 	var grunt := sim.catalog.key_of(TestSupport.GRUNT)
 
 	# Scatter obstacles so pathing does real work.
@@ -27,6 +27,35 @@ func _initialize() -> void:
 		var cx := 16 + (i % 6) * 16
 		var cy := 40 + (i / 6) * 12
 		sim.spawn_resource(cx, cy, sim.catalog.key_of(TestSupport.ROCK))
+
+	# A running economy alongside the melee (design_m3.md §8): 3 mining +
+	# assisting hubs with deposits in range, a dozen structures, a growing
+	# structure, and queues kept loaded for the whole run.
+	var hub_key := sim.catalog.key_of(TestSupport.HUB)
+	var hubs: Array[int] = []
+	for i in 3:
+		var hx := 16 + i * 40
+		hubs.append(sim.spawn_structure(0, hx, 104, hub_key))
+		sim.spawn_resource(hx + 8, 104, sim.catalog.key_of(TestSupport.NODE))
+		sim.spawn_resource(hx - 6, 112, sim.catalog.key_of(TestSupport.NODE))
+	sim.spawn_structure(0, 100, 110, hub_key, false) # growing, assist target
+	for i in 12:
+		sim.spawn_structure(0, 30 + i * 3, 118, sim.catalog.key_of(TestSupport.WALL))
+	var seq := 0
+	for i in hubs.size():
+		var alloc := SimCommand.new(0, SimCommand.Kind.ALLOCATE_ECONOMY)
+		alloc.targets = [hubs[i]]
+		alloc.params = {"alloy": 20, "flux": 0, "assist": 10}
+		alloc.seq = seq
+		seq += 1
+		sim.schedule(alloc)
+		for t in range(0, TICKS, 20):
+			var train := SimCommand.new(0, SimCommand.Kind.TRAIN)
+			train.targets = [hubs[i]]
+			train.params = {"type": grunt}
+			train.seq = seq
+			seq += 1
+			sim.schedule(train, maxi(t, 4))
 
 	var west: Array[int] = []
 	var east: Array[int] = []

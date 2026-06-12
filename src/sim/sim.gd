@@ -137,9 +137,11 @@ func step() -> void:
 	_rebuild_aura_index()
 	_execute_scheduled_commands()
 	_economy_system()
+	_production_system()
 	_run_flow_builds()
 	_movement_system()
 	_combat_system()
+	_status_system()
 	_structures_system()
 	_reap()
 	tick += 1
@@ -293,6 +295,14 @@ func _execute(cmd: SimCommand) -> void:
 			_execute_build(cmd)
 		SimCommand.Kind.ALLOCATE_ECONOMY:
 			_execute_allocate(cmd)
+		SimCommand.Kind.TRAIN:
+			_execute_train(cmd)
+		SimCommand.Kind.CANCEL:
+			_execute_cancel(cmd)
+		SimCommand.Kind.SET_RALLY:
+			_execute_set_rally(cmd)
+		SimCommand.Kind.ABILITY:
+			_execute_ability(cmd)
 		SimCommand.Kind.DEBUG_SPAWN:
 			spawn_unit(cmd.player_id,
 					cmd.params.get("x", 0), cmd.params.get("y", 0),
@@ -745,6 +755,8 @@ func _movement_system() -> void:
 		var e: SimEntity = entities[id]
 		if not e.is_unit() or e.hp <= 0 or e.orders.is_empty():
 			continue
+		if e.is_underground() or e.morph_ticks_left > 0:
+			continue # burrowed/mid-morph units don't move (§4.8)
 		var o: Dictionary = e.orders[0]
 		if o["kind"] == SimCommand.Kind.ATTACK_MOVE and _engaged(e):
 			continue # stand and fight
@@ -796,7 +808,7 @@ func _movement_system() -> void:
 	var crowd_done: Array[int] = []
 	for id in ids:
 		var e: SimEntity = entities[id]
-		if not e.is_unit() or e.hp <= 0:
+		if not e.is_unit() or e.hp <= 0 or e.is_underground():
 			continue
 		for nid in _bucket_neighbors(e, 1, id):
 			var n: SimEntity = entities[nid]
@@ -830,7 +842,7 @@ func _movement_system() -> void:
 	# 5. Push circles out of blocked cells; final map clamp.
 	for id in ids:
 		var e: SimEntity = entities[id]
-		if not e.is_unit() or e.hp <= 0:
+		if not e.is_unit() or e.hp <= 0 or e.is_underground():
 			continue
 		_push_out_of_blocked(e)
 		e.x = clampi(e.x, e.radius, grid.world_w() - e.radius)
@@ -1022,6 +1034,8 @@ func _rebuild_buckets(ids: Array) -> void:
 		if e.hp <= 0:
 			continue
 		if e.is_unit():
+			if e.is_underground():
+				continue # no collision, no targeting while burrowed (§4.8)
 			_bucket_insert(Vector2i(e.x >> BUCKET_SHIFT, e.y >> BUCKET_SHIFT), id)
 		else:
 			# Structures span every bucket their footprint AABB overlaps.
@@ -1080,9 +1094,12 @@ func _combat_system() -> void:
 		var e: SimEntity = entities[id]
 		if e.hp <= 0 or e.damage <= 0:
 			continue
-		# Growing structures and capsules cannot fight (§4.5).
+		# Growing structures and capsules cannot fight (§4.5); neither can
+		# burrowed or mid-morph units (§4.8).
 		if e.kind == SimEntity.Kind.STRUCTURE \
 				and e.build_state != SimEntity.BuildState.COMPLETE:
+			continue
+		if e.is_underground() or e.morph_ticks_left > 0:
 			continue
 		if e.cooldown > 0:
 			e.cooldown -= 1
@@ -1106,7 +1123,13 @@ func _combat_system() -> void:
 			if e.crit_base > 0 \
 					and ProcRng.roll(rng, e.procs, "crit", e.crit_base, e.crit_bonus):
 				dmg *= 2
-			t.hp -= dmg
+			# damage x class matrix x effective damage_taken, fixed muls
+			# truncating at each step (sim-visible rounding, documented in
+			# design_m3.md §2.6).
+			t.hp -= Fixed.to_int(Fixed.mul(
+					Fixed.mul(Fixed.from_int(dmg),
+							catalog.class_mul(e.attack_class, t.armor_class)),
+					eff_damage_taken(t)))
 			e.cooldown = e.cooldown_ticks
 
 
@@ -1126,6 +1149,8 @@ func _can_target(e: SimEntity, t: SimEntity) -> bool:
 	if not t.targetable or t.player == e.player:
 		return false
 	if t.is_aerial() and not e.hits_air:
+		return false
+	if t.is_underground():
 		return false
 	return true
 
@@ -1168,6 +1193,256 @@ func _reap() -> void:
 		if e.blocks:
 			grid.unblock_rect(e.foot_x, e.foot_y, e.foot_w, e.foot_h)
 		entities.erase(id)
+
+
+# --- production (design_m3.md §4.7) --------------------------------------------
+
+
+const TRAIN_QUEUE_MAX := 5
+
+
+## Cost and bandwidth reserve are taken at queue time; CANCEL refunds both.
+func _execute_train(cmd: SimCommand) -> void:
+	if cmd.targets.is_empty():
+		return
+	var e: SimEntity = entities.get(cmd.targets[0])
+	if not _functional(e) or e.player != cmd.player_id \
+			or e.kind != SimEntity.Kind.STRUCTURE:
+		return
+	var type: int = cmd.params.get("type", -1)
+	if type < 0 or type >= catalog.size() or catalog.kind_of(type) != "unit":
+		return
+	if type not in catalog.sim_of(e.type_key)["trains"]:
+		return
+	if e.train_queue.size() >= TRAIN_QUEUE_MAX:
+		return
+	var player: SimPlayer = players.get(cmd.player_id)
+	if player == null:
+		return
+	var s := catalog.sim_of(type)
+	if player.alloy < Fixed.from_int(s["cost_alloy"]) \
+			or player.flux < Fixed.from_int(s["cost_flux"]):
+		return
+	var bw := bandwidth_of(cmd.player_id)
+	if bw["used"] + s["bandwidth"] > bw["provided"]:
+		return
+	player.alloy -= Fixed.from_int(s["cost_alloy"])
+	player.flux -= Fixed.from_int(s["cost_flux"])
+	e.train_queue.append({"type": type, "left": s["train_time"]})
+
+
+func _execute_cancel(cmd: SimCommand) -> void:
+	if cmd.targets.is_empty():
+		return
+	var e: SimEntity = entities.get(cmd.targets[0])
+	if e == null or e.hp <= 0 or e.player != cmd.player_id:
+		return
+	var index: int = cmd.params.get("index", -1)
+	if index < 0 or index >= e.train_queue.size():
+		return
+	var player: SimPlayer = players.get(cmd.player_id)
+	if player == null:
+		return
+	var s := catalog.sim_of(e.train_queue[index]["type"])
+	player.alloy += Fixed.from_int(s["cost_alloy"])
+	player.flux += Fixed.from_int(s["cost_flux"])
+	e.train_queue.remove_at(index)
+
+
+func _execute_set_rally(cmd: SimCommand) -> void:
+	if cmd.targets.is_empty():
+		return
+	var e: SimEntity = entities.get(cmd.targets[0])
+	if e == null or e.hp <= 0 or e.player != cmd.player_id \
+			or e.kind != SimEntity.Kind.STRUCTURE:
+		return
+	e.rally_x = clampi(cmd.params.get("x", 0), 0, grid.world_w())
+	e.rally_y = clampi(cmd.params.get("y", 0), 0, grid.world_h())
+
+
+## One item builds at a time. On completion the unit spawns at the first
+## free cell scanning rings outward from the footprint; if none is free,
+## completion waits a tick and retries.
+func _production_system() -> void:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind != SimEntity.Kind.STRUCTURE or not _functional(e) \
+				or e.train_queue.is_empty():
+			continue
+		var head: Dictionary = e.train_queue[0]
+		if head["left"] > 0:
+			head["left"] -= 1
+		if head["left"] > 0:
+			continue
+		var cell := _free_cell_near_rect(e.foot_x, e.foot_y, e.foot_w, e.foot_h)
+		if cell == -1:
+			continue # retry next tick
+		var ux := grid.cell_center(cell % grid.width)
+		var uy := grid.cell_center(cell / grid.width)
+		var uid := spawn_unit(e.player, ux, uy, head["type"])
+		e.train_queue.pop_front()
+		if e.rally_x != 0 or e.rally_y != 0:
+			var rally := SimCommand.new(e.player, SimCommand.Kind.MOVE)
+			rally.targets = [uid]
+			rally.params = {"x": e.rally_x, "y": e.rally_y}
+			_order_move(rally)
+
+
+## First unblocked cell on rings around a footprint rect, scanning each
+## ring in a fixed order (top row, bottom row, left column, right column)
+## so every peer picks the same cell. -1 if none within max_radius rings.
+func _free_cell_near_rect(cx: int, cy: int, w: int, h: int,
+		max_radius: int = 12) -> int:
+	for r in range(1, max_radius + 1):
+		var x0 := cx - r
+		var x1 := cx + w - 1 + r
+		var y0 := cy - r
+		var y1 := cy + h - 1 + r
+		for x in range(x0, x1 + 1):
+			if grid.in_bounds(x, y0) and not grid.is_blocked(x, y0):
+				return grid.index(x, y0)
+			if grid.in_bounds(x, y1) and not grid.is_blocked(x, y1):
+				return grid.index(x, y1)
+		for y in range(y0 + 1, y1):
+			if grid.in_bounds(x0, y) and not grid.is_blocked(x0, y):
+				return grid.index(x0, y)
+			if grid.in_bounds(x1, y) and not grid.is_blocked(x1, y):
+				return grid.index(x1, y)
+	return -1
+
+
+# --- commanded abilities (design_m3.md §4.8) ------------------------------------
+
+
+## One execution path for every commanded ability: validate per unit
+## (ascending id), then dispatch on ability_kind. Failed checks skip that
+## unit silently — commands are requests.
+func _execute_ability(cmd: SimCommand) -> void:
+	var ability: int = cmd.params.get("ability", -1)
+	if ability < 0 or ability >= catalog.size() \
+			or catalog.kind_of(ability) != "ability":
+		return
+	var ab := catalog.sim_of(ability)
+	for e in _own_units(cmd):
+		if e.is_underground() or e.morph_ticks_left > 0:
+			continue
+		if ability not in _abilities_of(e):
+			continue
+		if e.ability_cooldowns.get(ability, 0) > 0:
+			continue
+		match ab["ability_kind"]:
+			CatalogSchema.AbilityKind.TOGGLE_MORPH:
+				# No cooldown — the morph time is the cost.
+				e.morph_ticks_left = ab["morph_time"]
+				e.orders.clear()
+				e.path = PackedInt32Array()
+				e.goal_key = -1
+				e.target_id = 0
+			CatalogSchema.AbilityKind.BLINK:
+				var tx: int = clampi(cmd.params.get("x", e.x),
+						SimGrid.CELL / 2, grid.world_w() - SimGrid.CELL / 2)
+				var ty: int = clampi(cmd.params.get("y", e.y),
+						SimGrid.CELL / 2, grid.world_h() - SimGrid.CELL / 2)
+				var dx := tx - e.x
+				var dy := ty - e.y
+				var r: int = ab["range"]
+				if absi(dx) > r or absi(dy) > r \
+						or Fixed.mul(dx, dx) + Fixed.mul(dy, dy) > Fixed.mul(r, r):
+					continue
+				e.underground_ticks_left = ab["travel_time"]
+				e.surface_x = tx
+				e.surface_y = ty
+				e.orders.clear()
+				e.path = PackedInt32Array()
+				e.goal_key = -1
+				e.target_id = 0
+			_:
+				pass # auras are passive; build runs through BUILD (§4.5)
+
+
+## Per-tick unit status: ability cooldowns, morph transitions, and
+## underground travel/surfacing.
+func _status_system() -> void:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if not e.is_unit() or e.hp <= 0:
+			continue
+		for key in e.ability_cooldowns.keys():
+			e.ability_cooldowns[key] -= 1
+			if e.ability_cooldowns[key] <= 0:
+				e.ability_cooldowns.erase(key)
+		if e.morph_ticks_left > 0:
+			e.morph_ticks_left -= 1
+			if e.morph_ticks_left == 0:
+				e.morphed = not e.morphed
+				_apply_morph_stats(e)
+		if e.is_underground():
+			e.underground_ticks_left -= 1
+			if e.underground_ticks_left == 0:
+				_surface(e)
+
+
+## Apply the morphed form's stat overrides, or restore catalog base stats
+## on unmorph. Overrides are static catalog values, so apply/restore is
+## deterministic with no extra state.
+func _apply_morph_stats(e: SimEntity) -> void:
+	var base := catalog.sim_of(e.type_key)
+	var overrides := {}
+	for ak in _abilities_of(e):
+		var ab := catalog.sim_of(ak)
+		if ab["ability_kind"] == CatalogSchema.AbilityKind.TOGGLE_MORPH:
+			overrides = ab["morphed"]
+			break
+	var source := overrides if e.morphed else base
+	for field: String in overrides:
+		var v: Variant = source[field] if source.has(field) else base[field]
+		match field:
+			"speed":
+				e.step = int(v) / TICK_RATE
+			"damage":
+				e.damage = v
+			"attack_range":
+				e.attack_range = v
+			"acquire_range":
+				e.acquire_range = v
+			"cooldown":
+				e.cooldown_ticks = v
+			"hits_air":
+				e.hits_air = v
+			"radius":
+				e.radius = v
+			"sight":
+				e.sight = v
+			"armor_class":
+				e.armor_class = v
+			"attack_class":
+				e.attack_class = v
+			"hp", "crit_base", "crit_bonus":
+				pass # not morphable: hp swings mid-fight are a balance trap
+			_:
+				pass
+
+
+## Surface at the nearest free cell to the burrow target (the same
+## deterministic ring scan production uses); the per-entity cooldown
+## starts now (§4.8).
+func _surface(e: SimEntity) -> void:
+	var cell := grid.nearest_free_cell(
+			clampi(grid.cell_of(e.surface_x), 0, grid.width - 1),
+			clampi(grid.cell_of(e.surface_y), 0, grid.height - 1))
+	if cell == -1:
+		e.underground_ticks_left = 1 # nowhere to surface; try again next tick
+		return
+	e.x = grid.cell_center(cell % grid.width)
+	e.y = grid.cell_center(cell / grid.width)
+	e.surface_x = 0
+	e.surface_y = 0
+	for ak in _abilities_of(e):
+		var ab := catalog.sim_of(ak)
+		if ab["ability_kind"] == CatalogSchema.AbilityKind.BLINK \
+				and ab["cooldown_time"] > 0:
+			e.ability_cooldowns[ak] = ab["cooldown_time"]
+			break
 
 
 # --- nanomachine economy (design_m3.md §4.6) ----------------------------------
@@ -1558,6 +1833,8 @@ func _recompute_vision() -> void:
 			var e: SimEntity = entities[id]
 			if e.player != pid or not _functional(e) or e.sight <= 0:
 				continue
+			if e.is_underground():
+				continue # burrowed units see nothing from down there
 			_stamp_sight(vis, e)
 		_vision[pid] = vis
 
@@ -1616,7 +1893,34 @@ func bandwidth_of(player: int) -> Dictionary:
 			used += catalog.sim_of(e.type_key)["bandwidth"]
 		elif e.kind == SimEntity.Kind.STRUCTURE:
 			provided += catalog.sim_of(e.type_key)["bandwidth_provided"]
+			# Queued trainees reserve their bandwidth at queue time (§4.1).
+			for q: Dictionary in e.train_queue:
+				used += catalog.sim_of(q["type"])["bandwidth"]
 	return {"used": used, "provided": provided}
+
+
+# --- view read API (design_m3.md §4.11) ----------------------------------------
+# Batch reads only — the view crosses the sim boundary O(1) times per tick,
+# never in a per-entity query loop (GDExtension port discipline, §4.12).
+
+
+## Floored balances for the HUD; the sim keeps fixed-point internally.
+func resources_of(player: int) -> Dictionary:
+	var p: SimPlayer = players.get(player)
+	if p == null:
+		return {"alloy": 0, "flux": 0}
+	return {"alloy": Fixed.to_int(p.alloy), "flux": Fixed.to_int(p.flux)}
+
+
+## Active aura circles granting `flag` for a player, as [x, y, radius]
+## fixed triples — the territory decal and minimap tint read these.
+func flagged_aura_circles(player: int, flag: String) -> Array:
+	var circles := []
+	var by_ability: Dictionary = _aura_sources.get(player, {})
+	for ak in catalog.abilities_with_flag(flag):
+		for src: Array in by_ability.get(ak, []):
+			circles.append([src[1], src[2], src[3]])
+	return circles
 
 
 # --- hashing ----------------------------------------------------------------

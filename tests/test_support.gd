@@ -8,6 +8,8 @@ const GRUNT := "t.grunt"
 const CRITTER := "t.critter"
 const WALL := "t.wall"
 const ROCK := "t.rock"
+const HUB := "t.hub"
+const NODE := "t.node"
 
 
 static func layer() -> Dictionary:
@@ -45,6 +47,29 @@ static func layer() -> Dictionary:
 			"kind": "resource",
 			"sim": { "resource": "alloy", "amount": 0, "foot_w": 3, "foot_h": 3 }
 		},
+		# Economy fixtures (used by the perf check's running economy).
+		"t.field": {
+			"kind": "ability",
+			"sim": {
+				"ability_kind": "aura", "radius": "10.0",
+				"affects": "own_structures", "flags": ["territory"],
+				"modifiers": { "hp_regen": "2.0", "damage_taken": "1.0" }
+			}
+		},
+		HUB: {
+			"kind": "structure",
+			"sim": {
+				"hp": 1000, "foot_w": 4, "foot_h": 4, "armor_class": "structure",
+				"build_time": "5.0", "sight": "12.0",
+				"bandwidth_provided": 99, "nano_pool": 30,
+				"abilities": ["t.field"], "trains": [GRUNT]
+			}
+		},
+		NODE: {
+			"kind": "resource",
+			"sim": { "resource": "alloy", "amount": 100000, "throughput": "5.0",
+				"foot_w": 2, "foot_h": 2 }
+		},
 	}
 
 
@@ -55,5 +80,12 @@ static func catalog() -> CompiledCatalog:
 
 
 ## Sim over a blank map with the synthetic catalog — the common fixture.
-static func sim(seed_value: int, tiles_w: int, tiles_h: int) -> Sim:
-	return Sim.new(seed_value, catalog(), MapData.blank(tiles_w, tiles_h))
+## `player_ids` adds funded SimPlayers (needed for economy/build/train).
+static func sim(seed_value: int, tiles_w: int, tiles_h: int,
+		player_ids: Array = []) -> Sim:
+	var map := MapData.blank(tiles_w, tiles_h)
+	for pid: int in player_ids:
+		map.players.append({"id": pid, "faction": "test",
+				"start_alloy": 100000, "start_flux": 100000})
+	map.rehash()
+	return Sim.new(seed_value, catalog(), map)
