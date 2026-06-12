@@ -18,6 +18,8 @@ touching sim code.
 ## Layout
 
 - `src/sim/` — deterministic lockstep simulation. Headless, tick-driven.
+- `src/data/` — catalog compiler/schema and map loader (outside the
+  determinism wall; the sim receives only their compiled output).
 - `src/view/` — 3D presentation; reads sim state, never writes it.
 - `src/ui/` — touch controls, side buttons, command console.
 - `src/net/` — lockstep networking (commands on the wire, not state).

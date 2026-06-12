@@ -928,6 +928,29 @@ Dependency-driven; each step lands with its tests green:
 Tracked here so they don't silently become decisions (answers fold back
 into this doc).
 
+*Implementation notes (M3 build, 2026-06-12).* Small deviations made
+during implementation, none load-bearing:
+
+- **Assets**: per project decision, M3 shipped on catalog-driven
+  primitive views only (step 10 deferred); the `view` block pipeline is
+  in place, so models land without code changes. No audio (stretch goal
+  skipped).
+- **Long-press designate** (§6.1) acts directly (pin + haptic) instead of
+  opening a one-option popup menu.
+- **Designation radial** uses the 4-petal idiom, so flick-assign and
+  radial recall reach slots 1–4; slots 5–8 are reachable via chips.
+  Revisit if playtests want more.
+- **Train screen** (§6.5): shortest-queue auto-pick shipped; the
+  long-press structure chooser is deferred with the rest of Organize.
+- **Capsule flight** renders as a vertical descent + hover bob over the
+  site, not an arc from the builder.
+- **Globals**: a separate `flux_rate` joined `alloy_rate` in
+  `core.classes` (the doc's "same" read as same *mechanism*).
+- **World tab** got a jump-mode minimap as a freebie (the tab itself
+  remains M4+).
+- The catalog gained a structure field `default_allocation`
+  (idle/alloy/flux/assist) to implement §4.6's catalog-declared default.
+
 *Resolved 2026-06-12 and folded into the body:* capsule hover has no
 timeout and no recall, killable only by `hits_air` attackers (§4.5);
 two-state fog for M3 with a clean seam for last-seen memory later (§4.4);
