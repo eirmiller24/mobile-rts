@@ -19,21 +19,22 @@ const FAIL_AVG_MS := 200.0
 
 
 func _initialize() -> void:
-	var sim := Sim.new(0xBEEF, 64, 64)
+	var sim := TestSupport.sim(0xBEEF, 64, 64)
+	var grunt := sim.catalog.key_of(TestSupport.GRUNT)
 
 	# Scatter obstacles so pathing does real work.
 	for i in 24:
 		var cx := 16 + (i % 6) * 16
 		var cy := 40 + (i / 6) * 12
-		sim.spawn_structure(2, cx, cy, 3, 3, 200, 0, false)
+		sim.spawn_resource(cx, cy, sim.catalog.key_of(TestSupport.ROCK))
 
 	var west: Array[int] = []
 	var east: Array[int] = []
 	for i in UNITS_PER_SIDE:
 		west.append(sim.spawn_unit(0,
-				Fixed.from_int(4 + (i % 10) * 2), Fixed.from_int(12 + (i / 10) * 3)))
+				Fixed.from_int(4 + (i % 10) * 2), Fixed.from_int(12 + (i / 10) * 3), grunt))
 		east.append(sim.spawn_unit(1,
-				Fixed.from_int(60 - (i % 10) * 2), Fixed.from_int(12 + (i / 10) * 3)))
+				Fixed.from_int(60 - (i % 10) * 2), Fixed.from_int(12 + (i / 10) * 3), grunt))
 
 	var west_cmd := SimCommand.new(0, SimCommand.Kind.ATTACK_MOVE)
 	west_cmd.targets = west

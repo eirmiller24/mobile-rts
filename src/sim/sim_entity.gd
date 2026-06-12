@@ -4,11 +4,13 @@ extends RefCounted
 ## footprint of blocked pathing cells). Plain data advanced by Sim's
 ## systems — no nodes, no floats, every field folded into hash_into().
 
-enum Kind { UNIT, STRUCTURE }
+enum Kind { UNIT, STRUCTURE, RESOURCE }
 
 var id: int = 0
 var player: int = 0
 var kind := Kind.UNIT
+## Catalog type this entity was spawned from (CompiledCatalog type_key).
+var type_key: int = -1
 
 ## Center position, fixed-point world units.
 var x: int = 0
@@ -34,6 +36,21 @@ var crit_base: int = 0
 var crit_bonus: int = 0
 ## Proc name -> consecutive-failure stacks (see ProcRng).
 var procs: Dictionary = {}
+## Vision radius, fixed (tiles = world units). 0 = projects no sight.
+var sight: int = 0
+## Can attack airborne targets (capsules). Melee authors false.
+var hits_air: bool = false
+## Interned damage/armor class indices (-1 = unset; no multiplier).
+var attack_class: int = -1
+var armor_class: int = -1
+## Base incoming-damage multiplier, fixed. Hive structures author 1.5 (the
+## feral state); the influence aura restores 1.0 (design_m3.md §4.3).
+var damage_taken: int = Fixed.ONE
+
+## Resource nodes (kind RESOURCE): remaining amount (fixed — extraction is
+## fractional per tick) and CatalogSchema.ResourceKind.
+var amount: int = 0
+var resource_kind: int = -1
 
 var target_id: int = 0
 
@@ -67,10 +84,16 @@ func is_unit() -> bool:
 	return kind == Kind.UNIT
 
 
+func is_resource() -> bool:
+	return kind == Kind.RESOURCE
+
+
 func hash_into(h: int) -> int:
-	for v: int in [id, player, kind, x, y, radius, step, hp, max_hp,
+	for v: int in [id, player, kind, type_key, x, y, radius, step, hp, max_hp,
 			int(targetable), damage, attack_range, acquire_range,
 			cooldown_ticks, cooldown, crit_base, crit_bonus, target_id,
+			sight, int(hits_air), attack_class, armor_class, damage_taken,
+			amount, resource_kind,
 			goal_key, done_goal_key, path_i, goal_d2_best, stall,
 			foot_x, foot_y, foot_w, foot_h]:
 		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF

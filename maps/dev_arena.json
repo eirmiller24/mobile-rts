@@ -1,0 +1,26 @@
+{
+	"manifest": { "name": "Dev Arena", "version": 1, "players": 1 },
+	"catalog_layers": [
+		"res://data/catalog/core.json",
+		"res://data/catalog/hive.json"
+	],
+	"terrain": { "tiles_w": 64, "tiles_h": 64 },
+	"players": [
+		{ "id": 1, "faction": "hive", "start_alloy": 500, "start_flux": 100 }
+	],
+	"objects": [
+		{ "type": "hive.stronghold", "player": 1, "cx": 20, "cy": 20, "completed": true },
+
+		{ "type": "core.alloy_deposit", "cx": 30, "cy": 14 },
+		{ "type": "core.alloy_deposit", "cx": 32, "cy": 26 },
+		{ "type": "core.alloy_deposit", "cx": 14, "cy": 32 },
+		{ "type": "core.flux_vent", "cx": 36, "cy": 36 },
+
+		{ "type": "core.alloy_deposit", "cx": 96, "cy": 40 },
+		{ "type": "core.flux_vent", "cx": 100, "cy": 30 },
+
+		{ "type": "core.training_dummy", "player": 0, "cx": 80, "cy": 80 },
+		{ "type": "core.training_dummy", "player": 0, "cx": 86, "cy": 80 },
+		{ "type": "core.thorn_turret", "player": 0, "cx": 90, "cy": 84 }
+	]
+}

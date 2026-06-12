@@ -36,11 +36,22 @@ func _fail(msg: String) -> void:
 	failures += 1
 
 
+func _spawn_grunt(sim: Sim, x: int, y: int) -> int:
+	return sim.spawn_unit(0, x, y, sim.catalog.key_of(TestSupport.GRUNT))
+
+
+## Row of 1x1-cell wall structures from cx0 (inclusive) for `length` cells.
+func _wall_row(sim: Sim, cx0: int, cy: int, length: int) -> void:
+	var wall := sim.catalog.key_of(TestSupport.WALL)
+	for cx in range(cx0, cx0 + length):
+		sim.spawn_structure(1, cx, cy, wall)
+
+
 ## Wall across the map at WALL_CY with a 4-cell gap at cx 14..17 (2.0 world
 ## units — wider than one unit diameter, see design.md clearance note).
 func _build_gapped_wall(sim: Sim) -> void:
-	sim.spawn_structure(1, 0, WALL_CY, 14, 1, 200)
-	sim.spawn_structure(1, 18, WALL_CY, 14, 1, 200)
+	_wall_row(sim, 0, WALL_CY, 14)
+	_wall_row(sim, 18, WALL_CY, 14)
 
 
 func _move(player: int, ids: Array[int], x: int, y: int) -> SimCommand:
@@ -51,9 +62,9 @@ func _move(player: int, ids: Array[int], x: int, y: int) -> SimCommand:
 
 
 func _test_single_unit_astar() -> void:
-	var sim := Sim.new(1, MAP_TILES, MAP_TILES)
+	var sim := TestSupport.sim(1, MAP_TILES, MAP_TILES)
 	_build_gapped_wall(sim)
-	var id := sim.spawn_unit(0, Fixed.from_int(8), Fixed.from_int(4))
+	var id := _spawn_grunt(sim, Fixed.from_int(8), Fixed.from_int(4))
 	var goal_x := Fixed.from_int(8)
 	var goal_y := Fixed.from_int(13)
 	sim.schedule(_move(0, [id], goal_x, goal_y))
@@ -73,11 +84,11 @@ func _test_single_unit_astar() -> void:
 
 
 func _test_group_flow_field() -> void:
-	var sim := Sim.new(2, MAP_TILES, MAP_TILES)
+	var sim := TestSupport.sim(2, MAP_TILES, MAP_TILES)
 	_build_gapped_wall(sim)
 	var ids: Array[int] = []
 	for i in 6:
-		ids.append(sim.spawn_unit(0,
+		ids.append(_spawn_grunt(sim,
 				Fixed.from_int(6 + (i % 3) * 2), Fixed.from_int(3 + i / 3)))
 	sim.schedule(_move(0, ids, Fixed.from_int(8), Fixed.from_int(13)))
 
@@ -99,9 +110,9 @@ func _test_group_flow_field() -> void:
 
 
 func _test_unreachable_gives_up() -> void:
-	var sim := Sim.new(3, MAP_TILES, MAP_TILES)
-	sim.spawn_structure(1, 0, WALL_CY, MAP_TILES * SimGrid.PATH_SUBDIV, 1, 200)
-	var id := sim.spawn_unit(0, Fixed.from_int(8), Fixed.from_int(4))
+	var sim := TestSupport.sim(3, MAP_TILES, MAP_TILES)
+	_wall_row(sim, 0, WALL_CY, MAP_TILES * SimGrid.PATH_SUBDIV)
+	var id := _spawn_grunt(sim, Fixed.from_int(8), Fixed.from_int(4))
 	sim.schedule(_move(0, [id], Fixed.from_int(8), Fixed.from_int(13)))
 
 	for i in 200:
@@ -117,14 +128,14 @@ func _test_unreachable_gives_up() -> void:
 ## order's cluster radius — not chain outward in a line (each newcomer
 ## stopping at the tail of the queue).
 func _test_cluster_around_blocked_goal() -> void:
-	var sim := Sim.new(4, MAP_TILES, MAP_TILES)
-	# 3x3-cell scenery cube (like the demo's resource cubes), center ~(8.25, 8.25).
-	sim.spawn_structure(2, 15, 15, 3, 3, 200, 0, false)
+	var sim := TestSupport.sim(4, MAP_TILES, MAP_TILES)
+	# 3x3-cell scenery cube (an empty resource node), center ~(8.25, 8.25).
+	sim.spawn_resource(15, 15, sim.catalog.key_of(TestSupport.ROCK))
 	var goal_x := Fixed.from_float(8.25)
 	var goal_y := Fixed.from_float(8.25)
 	var ids: Array[int] = []
 	for i in 6:
-		ids.append(sim.spawn_unit(0,
+		ids.append(_spawn_grunt(sim,
 				Fixed.from_int(3 + (i % 3) * 2), Fixed.from_int(3 + (i / 3) * 2)))
 	sim.schedule(_move(0, ids, goal_x, goal_y))
 

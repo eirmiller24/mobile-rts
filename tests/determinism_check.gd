@@ -42,7 +42,10 @@ func _initialize() -> void:
 
 
 func _run(seed_value: int) -> Dictionary:
-	var sim := Sim.new(seed_value, MAP_TILES, MAP_TILES)
+	var sim := TestSupport.sim(seed_value, MAP_TILES, MAP_TILES)
+	var critter := sim.catalog.key_of(TestSupport.CRITTER)
+	var grunt := sim.catalog.key_of(TestSupport.GRUNT)
+	var wall_key := sim.catalog.key_of(TestSupport.WALL)
 
 	# Two opposing squads either side of a wall with a gap. Squad A crits
 	# (exercises the pseudo-random proc path inside the hashed state).
@@ -51,9 +54,10 @@ func _run(seed_value: int) -> Dictionary:
 	for i in 6:
 		squad_a.append(sim.spawn_unit(0,
 				Fixed.from_int(6 + (i % 3) * 2), Fixed.from_int(14 + (i / 3) * 2),
-				{"crit_base": Fixed.ONE / 4, "crit_bonus": Fixed.ONE / 4}))
+				critter))
 		squad_b.append(sim.spawn_unit(1,
-				Fixed.from_int(24 + (i % 3) * 2), Fixed.from_int(14 + (i / 3) * 2)))
+				Fixed.from_int(24 + (i % 3) * 2), Fixed.from_int(14 + (i / 3) * 2),
+				grunt))
 
 	# Wall column at world x=16 (cell cx=32), gap at cy 30..33.
 	for cy in range(20, 45):
@@ -61,7 +65,7 @@ func _run(seed_value: int) -> Dictionary:
 			continue
 		var wall := SimCommand.new(2, SimCommand.Kind.BUILD)
 		wall.seq = cy
-		wall.params = {"cx": 32, "cy": cy, "w": 1, "h": 1, "hp": 150}
+		wall.params = {"cx": 32, "cy": cy, "type": wall_key}
 		sim.schedule(wall, 2)
 
 	sim.schedule(_attack_move(0, squad_a, 26, 16), 5)

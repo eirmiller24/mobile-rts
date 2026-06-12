@@ -52,24 +52,20 @@ const STALL_TICKS := 20
 ## build queue or a chokepoint jam doesn't false-trigger.
 const STALL_GIVE_UP_TICKS := 60
 
-const DEFAULT_STATS := {
-	"radius": Fixed.ONE * 2 / 5,
-	"speed": Fixed.ONE * 3,            # world units per second
-	"hp": 100,
-	"damage": 10,
-	"attack_range": Fixed.ONE * 3 / 2, # edge-to-edge
-	"acquire_range": Fixed.ONE * 6,    # center-to-center
-	"cooldown_ticks": 20,
-	"crit_base": 0,                    # fixed fraction; 0 = no crit proc
-	"crit_bonus": 0,                   # added per failed crit roll
-}
-
 var tick: int = 0
 var rng: DRng
 var grid: SimGrid
+## Compiled object catalog: the source of every entity's stats. Plain data
+## (see CompiledCatalog) — the sim never reads a file.
+var catalog: CompiledCatalog
+## player id -> SimPlayer (created from map data; 0 is neutral, unlisted).
+var players: Dictionary = {}
 ## entity_id -> SimEntity
 var entities: Dictionary = {}
 
+## Catalog + map content hashes, folded into state_hash() so peers with
+## mismatched data files desync at tick 0 with an obvious cause.
+var _data_hash: int = 0
 var _next_entity_id: int = 1
 ## tick -> Array[SimCommand]
 var _command_queue: Dictionary = {}
@@ -85,9 +81,27 @@ var _flow_builds: Array = []
 var _buckets: Dictionary = {}
 
 
-func _init(seed_value: int, tiles_w: int = 64, tiles_h: int = 64) -> void:
+func _init(seed_value: int, p_catalog: CompiledCatalog, map: MapData) -> void:
+	assert(p_catalog != null and p_catalog.ok(), "sim needs a valid catalog")
 	rng = DRng.new(seed_value)
-	grid = SimGrid.new(tiles_w, tiles_h)
+	catalog = p_catalog
+	grid = SimGrid.new(map.tiles_w, map.tiles_h)
+	_data_hash = (catalog.hash_value * 31 + map.hash_value) & 0x7FFFFFFFFFFFFFF
+	for p: Dictionary in map.players:
+		var sp := SimPlayer.new()
+		sp.id = p["id"]
+		sp.faction = SimHash.fnv_string(p["faction"])
+		sp.alloy = Fixed.from_int(p["start_alloy"])
+		sp.flux = Fixed.from_int(p["start_flux"])
+		players[sp.id] = sp
+	for obj: Dictionary in map.objects:
+		match catalog.kind_of(obj["type_key"]):
+			"unit":
+				spawn_unit(obj["player"], obj["x"], obj["y"], obj["type_key"])
+			"structure":
+				spawn_structure(obj["player"], obj["cx"], obj["cy"], obj["type_key"])
+			"resource":
+				spawn_resource(obj["cx"], obj["cy"], obj["type_key"])
 
 
 ## Schedule a command for execution. Lockstep peers must schedule identical
@@ -110,58 +124,94 @@ func step() -> void:
 	tick += 1
 
 
-## Scenario setup helper (map load / tests). Stats keys default from
-## DEFAULT_STATS; positions are fixed-point world coordinates.
-func spawn_unit(player: int, x: int, y: int, stats: Dictionary = {}) -> int:
+## Scenario setup helper (map load / tests). Stats come from the catalog;
+## positions are fixed-point world coordinates.
+func spawn_unit(player: int, x: int, y: int, type_key: int) -> int:
+	assert(catalog.kind_of(type_key) == "unit")
+	var s := catalog.sim_of(type_key)
 	var e := SimEntity.new()
 	e.id = _next_entity_id
 	_next_entity_id += 1
 	e.kind = SimEntity.Kind.UNIT
+	e.type_key = type_key
 	e.player = player
 	e.x = x
 	e.y = y
-	e.radius = stats.get("radius", DEFAULT_STATS["radius"])
-	e.step = int(stats.get("speed", DEFAULT_STATS["speed"])) / TICK_RATE
-	e.hp = stats.get("hp", DEFAULT_STATS["hp"])
-	e.max_hp = e.hp
-	e.damage = stats.get("damage", DEFAULT_STATS["damage"])
-	e.attack_range = stats.get("attack_range", DEFAULT_STATS["attack_range"])
-	e.acquire_range = stats.get("acquire_range", DEFAULT_STATS["acquire_range"])
-	e.cooldown_ticks = stats.get("cooldown_ticks", DEFAULT_STATS["cooldown_ticks"])
-	e.crit_base = stats.get("crit_base", DEFAULT_STATS["crit_base"])
-	e.crit_bonus = stats.get("crit_bonus", DEFAULT_STATS["crit_bonus"])
+	_copy_combat_stats(e, s)
+	e.radius = s["radius"]
+	e.step = int(s["speed"]) / TICK_RATE
+	e.crit_base = s["crit_base"]
+	e.crit_bonus = s["crit_bonus"]
 	entities[e.id] = e
 	return e.id
 
 
-## Footprint is in pathing cells (drawn walls are 1x1-cell structures;
-## buildings are multiples of SimGrid.PATH_SUBDIV). Returns 0 if any
-## footprint cell is blocked. Untargetable structures (resource nodes,
-## scenery) block movement but are ignored by combat.
-func spawn_structure(player: int, cx: int, cy: int, w: int, h: int,
-		hp: int = 200, damage: int = 0, targetable: bool = true) -> int:
+## Footprint comes from the catalog, in pathing cells (drawn walls are
+## 1x1-cell structures; nothing assumes a structure is at least a tile
+## big). Returns 0 if any footprint cell is blocked.
+func spawn_structure(player: int, cx: int, cy: int, type_key: int) -> int:
+	assert(catalog.kind_of(type_key) == "structure")
+	var s := catalog.sim_of(type_key)
+	var w: int = s["foot_w"]
+	var h: int = s["foot_h"]
 	if not grid.rect_free(cx, cy, w, h):
 		return 0
+	var e := _place_footprint(player, cx, cy, type_key, s)
+	e.kind = SimEntity.Kind.STRUCTURE
+	_copy_combat_stats(e, s)
+	return e.id
+
+
+## Resource nodes block their footprint, are untargetable, and never act
+## (design_m3.md §4.2). `amount` is kept in fixed point so fractional
+## per-tick extraction decrements exactly.
+func spawn_resource(cx: int, cy: int, type_key: int) -> int:
+	assert(catalog.kind_of(type_key) == "resource")
+	var s := catalog.sim_of(type_key)
+	var e := _place_footprint(0, cx, cy, type_key, s)
+	e.kind = SimEntity.Kind.RESOURCE
+	e.targetable = false
+	e.hp = 1
+	e.max_hp = 1
+	e.amount = Fixed.from_int(s["amount"])
+	e.resource_kind = s["resource"]
+	return e.id
+
+
+## Shared footprint placement: blocks the rect and positions the entity at
+## its center. Caller checks rect_free first if placement can fail.
+func _place_footprint(player: int, cx: int, cy: int, type_key: int,
+		s: Dictionary) -> SimEntity:
 	var e := SimEntity.new()
 	e.id = _next_entity_id
 	_next_entity_id += 1
-	e.kind = SimEntity.Kind.STRUCTURE
+	e.type_key = type_key
 	e.player = player
 	e.foot_x = cx
 	e.foot_y = cy
-	e.foot_w = w
-	e.foot_h = h
-	e.x = cx * SimGrid.CELL + w * SimGrid.CELL / 2
-	e.y = cy * SimGrid.CELL + h * SimGrid.CELL / 2
+	e.foot_w = s["foot_w"]
+	e.foot_h = s["foot_h"]
+	e.x = cx * SimGrid.CELL + e.foot_w * SimGrid.CELL / 2
+	e.y = cy * SimGrid.CELL + e.foot_h * SimGrid.CELL / 2
 	# Circle approximation of the footprint for range checks.
-	e.radius = mini(w, h) * SimGrid.CELL / 2
-	e.hp = hp
-	e.max_hp = hp
-	e.damage = damage
-	e.targetable = targetable
-	grid.block_rect(cx, cy, w, h)
+	e.radius = mini(e.foot_w, e.foot_h) * SimGrid.CELL / 2
+	grid.block_rect(cx, cy, e.foot_w, e.foot_h)
 	entities[e.id] = e
-	return e.id
+	return e
+
+
+func _copy_combat_stats(e: SimEntity, s: Dictionary) -> void:
+	e.hp = s["hp"]
+	e.max_hp = s["hp"]
+	e.damage = s["damage"]
+	e.attack_range = s["attack_range"]
+	e.acquire_range = s["acquire_range"]
+	e.cooldown_ticks = s["cooldown"]
+	e.sight = s["sight"]
+	e.hits_air = s["hits_air"]
+	e.attack_class = s["attack_class"]
+	e.armor_class = s["armor_class"]
+	e.damage_taken = s.get("damage_taken", Fixed.ONE)
 
 
 func _sorted_ids() -> Array:
@@ -199,15 +249,16 @@ func _execute(cmd: SimCommand) -> void:
 				e.goal_key = -1
 				e.target_id = 0
 		SimCommand.Kind.BUILD:
+			# Interim debug form: place a complete structure of a catalog
+			# type. The vision-gated lifecycle build replaces this in M3
+			# step 4 (design_m3.md §4.5).
 			spawn_structure(cmd.player_id,
 					cmd.params.get("cx", 0), cmd.params.get("cy", 0),
-					cmd.params.get("w", SimGrid.PATH_SUBDIV),
-					cmd.params.get("h", SimGrid.PATH_SUBDIV),
-					cmd.params.get("hp", 200), cmd.params.get("damage", 0),
-					cmd.params.get("targetable", true))
+					cmd.params.get("type", -1))
 		SimCommand.Kind.DEBUG_SPAWN:
 			spawn_unit(cmd.player_id,
-					cmd.params.get("x", 0), cmd.params.get("y", 0), cmd.params)
+					cmd.params.get("x", 0), cmd.params.get("y", 0),
+					cmd.params.get("type", -1))
 		_:
 			pass # Remaining kinds land in M3+.
 
@@ -928,10 +979,15 @@ func _reap() -> void:
 ## Derived data (flow cache, buckets) is excluded by design.
 func state_hash() -> int:
 	var h := 17
+	h = (h * 31 + _data_hash) & 0x7FFFFFFFFFFFFFF
 	h = (h * 31 + tick) & 0x7FFFFFFFFFFFFFF
 	h = (h * 31 + rng.state) & 0x7FFFFFFFFFFFFFF
 	h = (h * 31 + _next_entity_id) & 0x7FFFFFFFFFFFFFF
 	h = grid.hash_into(h)
+	var pids := players.keys()
+	pids.sort()
+	for pid in pids:
+		h = players[pid].hash_into(h)
 	for id in _sorted_ids():
 		h = entities[id].hash_into(h)
 	return h

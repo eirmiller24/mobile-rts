@@ -109,9 +109,9 @@ static func compile(layers: Array) -> CompiledCatalog:
 	# order. view/ui are deliberately excluded (§2.2).
 	var buf := PackedByteArray()
 	for key in out.size():
-		_fold(buf, out.ids[key])
-		_fold(buf, out.kinds[key])
-		_fold(buf, out.sim_blocks[key])
+		SimHash.fold_value(buf, out.ids[key])
+		SimHash.fold_value(buf, out.kinds[key])
+		SimHash.fold_value(buf, out.sim_blocks[key])
 	out.hash_value = SimHash.fnv_bytes(buf)
 	return out
 
@@ -442,39 +442,3 @@ static func _post_validate(out: CompiledCatalog) -> void:
 			out.errors.append("'%s': aura needs a positive radius" % id)
 
 
-# --- hashing ------------------------------------------------------------------
-
-
-## Canonical byte serialization for the catalog hash: engine-independent,
-## so GDScript and the future C++ port produce identical values.
-static func _fold(buf: PackedByteArray, v: Variant) -> void:
-	match typeof(v):
-		TYPE_INT:
-			for i in 8:
-				buf.append((v >> (i * 8)) & 0xFF)
-		TYPE_BOOL:
-			buf.append(1 if v else 0)
-		TYPE_STRING:
-			buf.append_array((v as String).to_utf8_buffer())
-			buf.append(0)
-		TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY:
-			_fold(buf, v.size())
-			for item: int in v:
-				_fold(buf, item)
-		TYPE_PACKED_STRING_ARRAY:
-			_fold(buf, (v as PackedStringArray).size())
-			for s: String in v:
-				_fold(buf, s)
-		TYPE_DICTIONARY:
-			var keys: Array = (v as Dictionary).keys()
-			keys.sort()
-			_fold(buf, keys.size())
-			for k: Variant in keys:
-				_fold(buf, k)
-				_fold(buf, v[k])
-		TYPE_ARRAY:
-			_fold(buf, (v as Array).size())
-			for item: Variant in v:
-				_fold(buf, item)
-		_:
-			assert(false, "unhashable catalog value type %d" % typeof(v))

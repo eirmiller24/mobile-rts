@@ -5,9 +5,8 @@ extends Node3D
 ## ticks; it influences the sim exclusively by scheduling SimCommands.
 
 const TICK_DT := 1.0 / Sim.TICK_RATE
-const MAP_TILES := 64
-## The sim's origin is the map corner; the view keeps the map centered.
-const WORLD_OFFSET := MAP_TILES / 2.0
+const MAP_PATH := "res://maps/dev_arena.json"
+const SIM_SEED := 0xC0FFEE
 
 ## Engine verbs the sim understands. The catalog binds buttons/taps to
 ## command ids; this table is the engine implementing those verbs, not a
@@ -23,14 +22,16 @@ const VERB_KIND := {
 	"hold": SimCommand.Kind.STOP,
 }
 
-const LOCAL_PLAYER := 0
-const ENEMY_PLAYER := 1
-const NEUTRAL_PLAYER := 2
+## Player 0 is reserved for neutral/hostile-neutral map objects (§3).
+const LOCAL_PLAYER := 1
 
 var sim: Sim
+var map: MapData
 var catalog: UICatalog
 var hud: Hud
 var controller: SelectionController
+## The sim's origin is the map corner; the view keeps the map centered.
+var world_offset := 32.0
 
 var _accumulator := 0.0
 var _cmd_seq := 0
@@ -45,7 +46,13 @@ var _cur := {}
 
 
 func _ready() -> void:
-	sim = Sim.new(0xC0FFEE, MAP_TILES, MAP_TILES)
+	map = MapLoader.load_path(MAP_PATH)
+	if not map.ok():
+		for e in map.errors:
+			push_error("map: %s" % e)
+		return
+	world_offset = map.tiles_w / 2.0
+	sim = Sim.new(SIM_SEED, map.catalog, map)
 	catalog = UICatalog.load_default()
 	if catalog == null:
 		push_error("UI catalog failed to load; controls disabled")
@@ -71,7 +78,7 @@ func _ready() -> void:
 	controller.selection_changed.connect(_on_selection_changed)
 	controller.order_issued.connect(_on_order_issued)
 
-	_spawn_demo_units()
+	_sync_views()
 
 
 func _process(delta: float) -> void:
@@ -83,79 +90,36 @@ func _process(delta: float) -> void:
 	_interpolate_views(_accumulator / TICK_DT)
 
 
-func _spawn_demo_units() -> void:
-	for i in 6:
-		var pos := Vector3(-4.0 + 3.0 * (i % 3), 0.0, 5.0 + 3.0 * floori(i / 3.0))
-		_spawn_sim_unit(LOCAL_PLAYER, UnitView.FACTION_PLAYER, pos)
-	for i in 4:
-		var pos := Vector3(-5.0 + 3.5 * i, 0.0, -14.0)
-		_spawn_sim_unit(ENEMY_PLAYER, UnitView.FACTION_ENEMY, pos)
-	# Resource line (mineable in M3; solid scenery for now).
-	for i in 3:
-		_spawn_obstacle(Vector3(15.0, 0.0, -2.0 + 3.0 * i))
-	for pos in _obstacle_course():
-		_spawn_obstacle(pos)
+## Create views for sim entities that don't have one yet (map spawns at
+## startup, trained units later). Placeholder primitives until the
+## catalog-driven view layer lands (M3 step 9).
+func _sync_views() -> void:
+	for id in sim.entities:
+		if _views.has(id):
+			continue
+		var e: SimEntity = sim.entities[id]
+		var pos := _sim_to_view(e)
+		var kind := UnitView.Kind.UNIT if e.is_unit() else UnitView.Kind.RESOURCE
+		var view := UnitView.make(kind, _faction_of(e), pos)
+		view.entity_id = id
+		add_child(view)
+		_views[id] = view
+		_prev[id] = pos
+		_cur[id] = pos
 
 
-## A pathing playground between the two squads: two staggered walls with
-## gaps, an L-shaped pocket guarding the right route, and stray rocks.
-## Cubes sit at 1.5 spacing = exactly 3 pathing cells, so rows fuse into
-## continuous blockers.
-func _obstacle_course() -> Array[Vector3]:
-	var list: Array[Vector3] = []
-	# Front wall (z = -1): gap in the middle, gap on the right.
-	for i in 8:
-		list.append(Vector3(-16.0 + 1.5 * i, 0.0, -1.0))
-	for i in 6:
-		list.append(Vector3(-1.5 + 1.5 * i, 0.0, -1.0))
-	# Staggered back wall (z = -7): open at both ends, offset from the
-	# front gaps so nothing is a straight shot.
-	for i in 9:
-		list.append(Vector3(-10.0 + 1.5 * i, 0.0, -7.0))
-	# L-shaped pocket narrowing the right route into a choke.
-	for i in 3:
-		list.append(Vector3(9.0, 0.0, -3.0 - 1.5 * i))
-	for i in 2:
-		list.append(Vector3(10.5 + 1.5 * i, 0.0, -3.0))
-	# Stray rocks on the flanks.
-	list.append(Vector3(-13.0, 0.0, -10.0))
-	list.append(Vector3(3.0, 0.0, -11.0))
-	return list
+func _faction_of(e: SimEntity) -> int:
+	if e.player == LOCAL_PLAYER:
+		return UnitView.FACTION_PLAYER
+	if e.is_resource():
+		return UnitView.FACTION_NEUTRAL
+	return UnitView.FACTION_ENEMY
 
 
-## Immovable, untargetable 3x3-cell (1.5 world unit) blocker with a yellow
-## cube view snapped to its sim footprint.
-func _spawn_obstacle(pos: Vector3) -> void:
-	var cx := sim.grid.cell_of(Fixed.from_float(pos.x + WORLD_OFFSET)) - 1
-	var cy := sim.grid.cell_of(Fixed.from_float(pos.z + WORLD_OFFSET)) - 1
-	var id := sim.spawn_structure(NEUTRAL_PLAYER, cx, cy, 3, 3, 200, 0, false)
-	if id == 0:
-		push_warning("obstacle at %v overlaps blocked cells; skipped" % pos)
-		return
-	var snap_pos := _sim_to_view(sim.entities[id])
-	var view := UnitView.make(UnitView.Kind.RESOURCE, UnitView.FACTION_NEUTRAL, snap_pos)
-	view.entity_id = id
-	add_child(view)
-	_views[id] = view
-	_prev[id] = snap_pos
-	_cur[id] = snap_pos
-
-
-func _spawn_sim_unit(player: int, faction: int, pos: Vector3) -> void:
-	var id := sim.spawn_unit(player,
-			Fixed.from_float(pos.x + WORLD_OFFSET),
-			Fixed.from_float(pos.z + WORLD_OFFSET))
-	var view := UnitView.make(UnitView.Kind.UNIT, faction, pos)
-	view.entity_id = id
-	add_child(view)
-	_views[id] = view
-	_prev[id] = pos
-	_cur[id] = pos
-
-
-## After each sim tick: roll interpolation targets and drop views whose
-## entities died.
+## After each sim tick: roll interpolation targets, create views for new
+## entities, and drop views whose entities died.
 func _capture_tick() -> void:
+	_sync_views()
 	for id in _views.keys():
 		var e: SimEntity = sim.entities.get(id)
 		if e == null:
@@ -175,8 +139,8 @@ func _interpolate_views(alpha: float) -> void:
 
 
 func _sim_to_view(e: SimEntity) -> Vector3:
-	return Vector3(Fixed.to_float(e.x) - WORLD_OFFSET, 0.0,
-			Fixed.to_float(e.y) - WORLD_OFFSET)
+	return Vector3(Fixed.to_float(e.x) - world_offset, 0.0,
+			Fixed.to_float(e.y) - world_offset)
 
 
 func _on_selection_changed(units: Array[UnitView]) -> void:
@@ -200,8 +164,8 @@ func _on_order_issued(command_id: String, units: Array[UnitView],
 	_cmd_seq += 1
 	if kind != SimCommand.Kind.STOP:
 		cmd.params = {
-			"x": Fixed.from_float(world_pos.x + WORLD_OFFSET),
-			"y": Fixed.from_float(world_pos.z + WORLD_OFFSET),
+			"x": Fixed.from_float(world_pos.x + world_offset),
+			"y": Fixed.from_float(world_pos.z + world_offset),
 		}
 	sim.schedule(cmd)
 
