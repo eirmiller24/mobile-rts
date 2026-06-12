@@ -1912,6 +1912,20 @@ func resources_of(player: int) -> Dictionary:
 	return {"alloy": Fixed.to_int(p.alloy), "flux": Fixed.to_int(p.flux)}
 
 
+## Placement prediction helpers for the build UI (client-side mirror of
+## the BUILD checks; the sim still revalidates on execution).
+func vent_at(cx: int, cy: int, w: int, h: int) -> int:
+	return _vent_at(cx, cy, w, h)
+
+
+func vent_taken(vent_id: int) -> bool:
+	return _siphon_on(vent_id) != 0
+
+
+func territory_covers(player: int, x: int, y: int) -> bool:
+	return in_flagged_aura(player, "territory", x, y)
+
+
 ## Active aura circles granting `flag` for a player, as [x, y, radius]
 ## fixed triples — the territory decal and minimap tint read these.
 func flagged_aura_circles(player: int, flag: String) -> Array:
