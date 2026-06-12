@@ -110,6 +110,17 @@ func _ready() -> void:
 	hud.designation_button.recall_requested.connect(_on_designation_recall)
 	hud.chips.chip_tapped.connect(_on_designation_recall)
 
+	var fog := FogOverlay.new()
+	fog.sim = sim
+	fog.local_player = LOCAL_PLAYER
+	fog.world_offset = world_offset
+	add_child(fog)
+	var territory := TerritoryDecal.new()
+	territory.sim = sim
+	territory.local_player = LOCAL_PLAYER
+	territory.world_offset = world_offset
+	add_child(territory)
+
 	_sync_views()
 
 
@@ -123,17 +134,17 @@ func _process(delta: float) -> void:
 
 
 ## Create views for sim entities that don't have one yet (map spawns at
-## startup, trained units later). Placeholder primitives until the
-## catalog-driven view layer lands (M3 step 9).
+## startup, trained units and capsules later). Views are catalog-driven
+## primitives; real models land in the catalog's view blocks without
+## code changes (design_m3.md §7.1).
 func _sync_views() -> void:
 	for id in sim.entities:
 		if _views.has(id):
 			continue
 		var e: SimEntity = sim.entities[id]
 		var pos := _sim_to_view(e)
-		var kind := UnitView.Kind.UNIT if e.is_unit() else UnitView.Kind.RESOURCE
-		var view := UnitView.make(kind, _faction_of(e), pos)
-		view.entity_id = id
+		var view := UnitView.from_entity(e, map.catalog.view_of(e.type_key),
+				_faction_of(e), pos)
 		add_child(view)
 		_views[id] = view
 		_prev[id] = pos
@@ -155,6 +166,7 @@ func _capture_tick() -> void:
 	designations.prune(func(id: int) -> bool:
 		var e: SimEntity = sim.entities.get(id)
 		return e != null and e.hp > 0)
+	var capsule_time: int = map.catalog.globals["capsule_time"]
 	for id in _views.keys():
 		var e: SimEntity = sim.entities.get(id)
 		if e == null:
@@ -165,6 +177,13 @@ func _capture_tick() -> void:
 			continue
 		_prev[id] = _cur[id]
 		_cur[id] = _sim_to_view(e)
+		# Two-state fog: own entities and resource nodes always render;
+		# other players' dynamic entities hide under fog (§4.4).
+		var view: UnitView = _views[id]
+		view.visible = e.player == LOCAL_PLAYER or e.is_resource() \
+				or sim.is_tile_visible(LOCAL_PLAYER,
+						Fixed.to_int(e.x), Fixed.to_int(e.y))
+		view.sync_state(e, capsule_time)
 
 
 func _interpolate_views(alpha: float) -> void:

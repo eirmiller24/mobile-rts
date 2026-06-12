@@ -116,7 +116,7 @@ func _finish(pos: Vector2) -> void:
 func _tap(pos: Vector2) -> void:
 	var unit := _pick_unit(pos)
 	if selection.is_empty():
-		if unit != null and unit.faction == UnitView.FACTION_PLAYER:
+		if unit != null and unit.selectable:
 			_select([unit])
 		return
 
@@ -129,12 +129,14 @@ func _tap(pos: Vector2) -> void:
 		return
 	if unit == null:
 		_issue(catalog.context_orders["ground"], null, world)
-	elif unit.faction == UnitView.FACTION_PLAYER:
+	elif unit.selectable:
 		_select([unit]) # tapping an own unit always re-selects
-	elif unit.kind == UnitView.Kind.RESOURCE:
-		_issue(catalog.context_orders["resource"], unit, world)
-	else:
+	elif unit.faction == UnitView.FACTION_ENEMY:
 		_issue(catalog.context_orders["enemy"], unit, world)
+	else:
+		# Neutral resources and own structures: the resource context order
+		# (the Hive maps it to move — workers are a Rebel thing).
+		_issue(catalog.context_orders["resource"], unit, world)
 
 
 func _lasso() -> void:
@@ -142,7 +144,7 @@ func _lasso() -> void:
 		return
 	var hits: Array[UnitView] = []
 	for u in _all_units():
-		if u.faction != UnitView.FACTION_PLAYER:
+		if not u.selectable:
 			continue
 		if camera.is_position_behind(u.global_position):
 			continue
