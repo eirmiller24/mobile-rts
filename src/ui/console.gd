@@ -247,8 +247,13 @@ func _on_back() -> void:
 # --- Build placement flow (design_m3.md §6.3) -----------------------------------
 
 
+## Picking a structure arms BOTH placement paths at once: the console's
+## placement screen (pins / popup) and direct viewport placement — swipe
+## the console down and tap the world (design.md "The Command Console").
 func _begin_placement(type_key: int, widget: UICatalog.WidgetDef) -> void:
 	_pending_build = type_key
+	if ctx.arm_placement.is_valid():
+		ctx.arm_placement.call(type_key)
 	_show_screen(widget.params.get("placement_screen", ""))
 
 
@@ -272,6 +277,8 @@ func _on_minimap_point(x: int, y: int, mini: MinimapView) -> void:
 		var type := _pending_build
 		_pending_build = -1
 		_on_back()
+		if ctx.cancel_placement.is_valid():
+			ctx.cancel_placement.call() # the popup's ghost takes over
 		ctx.open_placement.call(type, x, y)
 	else:
 		ctx.jump_camera.call(x, y)
@@ -311,6 +318,8 @@ func _auto_place(type_key: int, px: int, py: int) -> void:
 		ctx.status.call("nothing can build that")
 		return
 	_pending_build = -1
+	if ctx.cancel_placement.is_valid():
+		ctx.cancel_placement.call()
 	ctx.issue.call(SimCommand.Kind.BUILD, [builder] as Array[int],
 			{"type": type_key, "cx": found.x, "cy": found.y})
 	ctx.status.call("building %s" % ctx.label_of(type_key))

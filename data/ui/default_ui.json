@@ -59,7 +59,7 @@
 			"build_place": {
 				"title": "Placement",
 				"widgets": [
-					{ "type": "label", "label": "Tap a pin to auto-place near it, or tap anywhere on the map to place precisely." },
+					{ "type": "label", "label": "Tap a pin to auto-place near it, tap the minimap to place precisely there — or swipe the console down and tap the world directly." },
 					{ "type": "minimap", "params": { "mode": "pick" } }
 				]
 			},

@@ -20,6 +20,9 @@ var console: ConsoleView
 
 var _readout: Label
 var _readout_accum := 0.0
+## Extra controls (registered by the game root) that should block viewport
+## gestures while visible — e.g. the placement confirm bar.
+var extra_occluders: Array[Control] = []
 
 
 ## HUD resource readout (design_m3.md §6.7): floored balances + derived
@@ -156,6 +159,9 @@ func is_point_on_ui(point: Vector2) -> bool:
 		return true
 	if point.y >= console.position.y: # console spans the full width
 		return true
+	for c in extra_occluders:
+		if c.visible and c.get_global_rect().has_point(point):
+			return true
 	return reselect.get_global_rect().has_point(point)
 
 

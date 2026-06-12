@@ -48,6 +48,9 @@ jobs:
       - name: Economy check
         run: ~/godot-bin/godot --headless --path . -s res://tests/economy_check.gd
 
+      - name: Placement check
+        run: ~/godot-bin/godot --headless --path . -s res://tests/placement_check.gd
+
       - name: Perf check
         run: ~/godot-bin/godot --headless --path . -s res://tests/perf_check.gd
 

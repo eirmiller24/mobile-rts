@@ -18,6 +18,10 @@ var issue := Callable()
 var jump_camera := Callable()
 ## func(type_key: int, sim_x: int, sim_y: int) — open the placement popup.
 var open_placement := Callable()
+## func(type_key: int) — arm direct in-viewport placement (ghost + bar).
+var arm_placement := Callable()
+## func() — disarm any in-viewport placement in progress.
+var cancel_placement := Callable()
 ## func(text: String) — HUD status line.
 var status := Callable()
 

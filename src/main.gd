@@ -33,6 +33,7 @@ var controller: SelectionController
 var designations: Designations
 var ctx: GameUIContext
 var placement: PlacementPopup
+var viewport_placement: ViewportPlacement
 ## The sim's origin is the map corner; the view keeps the map centered.
 var world_offset := 32.0
 
@@ -72,6 +73,10 @@ func _ready() -> void:
 	ctx.issue = _issue_command
 	ctx.jump_camera = jump_camera_to_sim
 	ctx.open_placement = _open_placement
+	ctx.arm_placement = func(type_key: int) -> void:
+		viewport_placement.begin(type_key)
+	ctx.cancel_placement = func() -> void:
+		viewport_placement.cancel_placement()
 	ctx.status = func(text: String) -> void: hud.set_status(text)
 
 	hud = Hud.new()
@@ -81,7 +86,17 @@ func _ready() -> void:
 	add_child(hud)
 	camera_rig.ui_occluder = hud.is_point_on_ui
 
-	# Placement popup above the console (added after the HUD layer).
+	# Direct in-viewport placement: ghost + floating confirm bar.
+	viewport_placement = ViewportPlacement.new()
+	viewport_placement.sim = sim
+	viewport_placement.local_player = LOCAL_PLAYER
+	viewport_placement.world_offset = world_offset
+	viewport_placement.ghost_parent = self
+	viewport_placement.place_confirmed.connect(_on_place_confirmed)
+	hud.add_child(viewport_placement)
+	hud.extra_occluders.append(viewport_placement)
+
+	# Placement popup above the console (added after, so it draws on top).
 	placement = PlacementPopup.new()
 	placement.sim = sim
 	placement.local_player = LOCAL_PLAYER
@@ -103,6 +118,7 @@ func _ready() -> void:
 	controller.selection_changed.connect(_on_selection_changed)
 	controller.order_issued.connect(_on_order_issued)
 
+	controller.placement_tap = viewport_placement.handle_tap
 	controller.long_pressed.connect(_on_ground_long_pressed)
 	hud.designation_button.has_selection = func() -> bool:
 		return not controller.selection.is_empty()

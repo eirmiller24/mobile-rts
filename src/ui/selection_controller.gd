@@ -28,6 +28,9 @@ var camera: Camera3D
 var hud: Hud
 var catalog: UICatalog
 var auto_deselect := true
+## When valid and returning true, an armed placement mode consumed the
+## tap (func(world_pos: Vector3) -> bool) — checked before selection.
+var placement_tap := Callable()
 
 var selection: Array[UnitView] = []
 var last_group: Array[UnitView] = []
@@ -114,6 +117,8 @@ func _finish(pos: Vector2) -> void:
 
 
 func _tap(pos: Vector2) -> void:
+	if placement_tap.is_valid() and placement_tap.call(_ground_point(pos)):
+		return # structure placement owns viewport taps while armed
 	var unit := _pick_unit(pos)
 	if selection.is_empty():
 		if unit != null and unit.selectable:
