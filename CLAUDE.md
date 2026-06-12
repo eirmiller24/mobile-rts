@@ -12,7 +12,7 @@ touching sim code.
   via flatpak (`flatpak run org.godotengine.Godot`, version 4.6.3).
 - GDScript only — standard Godot build, no .NET/C#. Blender 4.2 is available
   in the container for the asset pipeline (Blender → glTF).
-- Headless checks the user can run on the host:
+- Headless checks the user can run on the host (one per script in `tests/`):
   `flatpak run org.godotengine.Godot --headless --path . -s res://tests/determinism_check.gd`
 
 ## Layout

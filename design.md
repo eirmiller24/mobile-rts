@@ -23,12 +23,13 @@ These are the tests every feature has to pass:
 
 Decisions locked in here shape everything else, so they go near the top.
 
-- **Engine:** Godot 4.6, standard build (GDScript, no .NET). Performance-critical sim code can move to GDExtension (C++) later if profiling demands it, but we start pure GDScript.
+- **Engine:** Godot 4.6, standard build (GDScript, no .NET). We start pure GDScript; the sim core moves to GDExtension (C++) around M6 — M2 profiling settled this from "if profiling demands it" to "planned" (see "The GDExtension port" below).
 - **Rendering:** 3D world with a fixed-angle perspective camera (WC3/SC2 style), using Godot's Mobile renderer. 3D gives us smooth zoom/rotate, terrain height, and the "standing on the bridge" feel. Asset pipeline is Blender → glTF.
 - **Simulation:** Deterministic lockstep. The sim is a pure, headless GDScript module that advances in fixed ticks and is fed only commands. The 3D scene is a *view* of the sim, never the sim itself. This is what makes multiplayer cheap (commands on the wire, not state), makes replays free, and keeps mobile bandwidth tiny.
 - **Orientation:** Landscape. The side control buttons and bottom console assume thumbs on both edges of a horizontally-held phone.
 - **Dev loop:** Develop and iterate on Linux desktop with mouse-emulated touch. Export to Android once the control scheme is provable on-device. iOS later.
 - **Performance budget (initial targets):** 60 fps render on mid-range Android, sim tick at 20 Hz, ~300 active units per game without dropping ticks. These numbers will move, but every system gets designed against *some* number.
+  - *M2 measurements* (desktop Linux, pure GDScript, `tests/perf_check.gd`): ~30 ms/tick with 300 units marching; ~90–100 ms/tick in a sustained 300-unit melee (the dominant costs are per-unit neighbor queries in movement and combat). Verdict: pure GDScript comfortably holds ~150 units in heavy combat, not 300 — the planned GDExtension port of the movement/combat inner loops is *expected*, not just possible, before M7-scale content. Flow-field builds are already amortized (see Pathfinding), so group orders never freeze a tick.
 
 ### Determinism rules (the sim's constitution)
 
@@ -41,11 +42,47 @@ Lockstep dies the moment two machines disagree, so the sim follows hard rules:
 - Commands are timestamped to a future tick (2–4 ticks of command latency) and executed identically on all peers.
 - Periodic state hashing for desync detection: every N ticks each peer hashes its sim state and peers compare.
 
+### Pseudo-random procs
+
+Chance-based effects (crits, bash-style procs) don't roll flat probabilities. Like the WC3 engine, every proc has a **base chance** plus a **stacking bonus** added after each failed roll; a success resets the stack. This trims streaks at both ends so 25% *feels* like 25%. The two parameters are independent catalog fields — map makers who want to engineer their maps closely control both: a stacking bonus of 0 gives true constant-chance randomness, a high bonus approaches a metronome, and base+bonus together set a hard ceiling on bad luck (25%+25% can never fail four times running). Proc stacks are sim state: per entity per proc, folded into the desync hash, rolled only through the sim's RNG.
+
 ### Pathfinding and movement
 
-- Grid-based sim world (the 3D terrain is a visualization of the grid, with height).
-- Flow fields for group movement — one field per destination shared by the whole ordered group — with grid A* for small/single-unit orders.
-- Local avoidance is deterministic and sim-side (boids-lite steering on fixed point), not engine navigation.
+- Grid-based sim world (the 3D terrain is a visualization of the grid, with height). Two grid resolutions, one cell store: the **build grid** (1 tile) that normal structures snap to, and a finer **pathing grid** (2×2 pathing cells per build tile) that movement, flow fields, and collision run on. The pathing grid is finer for a product reason, not just fidelity — see drawn walls below.
+- Flow fields for group movement — one field per destination shared by the whole ordered group — with grid A* for small/single-unit orders (≤3 units). (For the record: SC2 itself was *not* flow fields — it ran A* over a triangulated navmesh with a heavy steering/flocking layer on top. Flow fields are the Supreme Commander 2 lineage. On a grid-locked deterministic sim, fields + steering get us the SC2 feel at a cost we can compute in GDScript.)
+- Flow fields build **incrementally under a fixed per-tick operation budget** (an op count, not wall time, so every lockstep peer advances builds identically). Ordered units hold position for the few ticks a big field needs — a cross-map army order costs ~10 ticks of background build instead of one multi-hundred-ms frozen tick. Builds also early-exit once every ordering unit's cell is covered, so short orders resolve within a tick.
+- Anti-deadlock guarantees: a unit with no progress toward its goal for ~1 s completes in place if it's touching an arrived group-mate (wedged behind its own crowd = de facto arrival), and abandons the order entirely after ~3 s of zero progress. No unit grinds against a wall or orbits a crowd forever; fighting counts as progress for attack-moves.
+- **Pathing and collision are separate layers.** A flow field or A* path knows nothing about units — it only supplies the desired direction from any cell. Each tick a unit (in ascending id order) integrates its desired velocity, then collision is resolved deterministically: overlapping unit circles are pushed apart pairwise, then circles are pushed out of blocked cells. Pathing handles static obstacles; the resolution pass handles everything dynamic. This is also the answer to "how do flow fields interact with unit collision": they don't — collision is downstream.
+- Collision shapes follow the SC/WC standard: mobile units are circles (fixed-point radius), structures are rectangles of blocked pathing cells.
+- Local avoidance is deterministic and sim-side (boids-lite steering on fixed point), not engine navigation: a mover whose heading runs into a stationary unit slides along that unit's tangent instead of plowing in, which is what lets groups wrap around a settled crowd or a surrounded target.
+- Crowd arrival: a unit's move order completes when it reaches the goal, *or* when it touches an already-arrived unit of the same order **within the order's cluster radius** — a cap that scales with group size (~√N unit diameters). The cap matters: without it, each newcomer stops at the tail of the queue and the "cluster" degenerates into a line walking away from the target.
+- Surround slots: a group ordered onto a *blocked footprint* (structure, resource node) doesn't share one goal — each unit is assigned a personal slot cell on the obstacle's perimeter (picked spread-first so the far side fills, assigned nearest-first so nobody crosses the group). Units travel on the shared flow field, then within a few world units of the goal each re-paths a short A* leg to its own slot. This is what makes a group *encircle* a mineral patch or building instead of piling on the near face.
+- Caveat: fields and paths don't model unit radius (no clearance data), so walkable gaps must be at least one unit diameter wide. Map validation should warn on narrower gaps.
+
+#### Structure footprints and drawn walls
+
+Normal structures occupy whole build tiles. **Defensive barricades are the exception:** because this is a touch game, walls are *drawn* — select "build wall", drag a stroke on the map, and the stroke rasterizes into a chain of wall segments. Tile-sized segments would look terrible, so wall segments snap to the finer pathing grid (one pathing cell each). Each segment is otherwise an ordinary structure — own hp, attackable, blocks pathing, dies independently (so the enemy chews a hole in your wall, not the whole wall). Consequence for all footprint code, editor included: footprints are stored in *pathing cells*, not build tiles, and nothing may assume a structure is at least a tile big.
+
+### The GDExtension port (planned, ~M6)
+
+The M2 measurements settled "if profiling demands it": pure GDScript holds ~150 units in heavy combat, not the 300 the budget asks for. The port is now *planned*, targeted around M6 — Android export is when 3–4× slower mobile CPUs meet real armies, and multiplayer turns dropped ticks from cosmetic into a sync problem. Until then GDScript comfortably carries M3–M5.
+
+**Why not sooner:** the port itself is cheap (~3–5 days of mechanical translation — the algorithms are designed, debugged, and hash-verified — plus 2–4 days of godot-cpp/SCons/CI toolchain) but porting before M5 taxes the wrong thing: M3–M5 is the sim's highest-churn stretch, and a C++ sim trades away GDScript's edit-and-rerun iteration exactly when game-feel iteration matters most. The hot core (movement/collision/combat/pathing) is already feature-complete as of M2; M3–M5 add breadth, not inner loops, so deferral barely grows the port. **Tripwire:** if M4 bot matches drop ticks on *desktop* at the army sizes we actually field, pull the port forward to post-M4 — playtest quality is the one thing we don't compromise.
+
+**The boundary sits where the data is: the whole `src/sim/` module, not individual hot functions.** The melee cost is spread across per-unit-per-neighbor inner loops; if entity state stayed in GDScript and we called C++ per unit, marshalling would eat the win. So entity state (structure-of-arrays) lives C++-side, and GDScript crosses the boundary O(1) times per tick: `Sim.new(seed, map)`, `schedule(command)`, `step()`, `state_hash()`, plus batch read APIs for the view (one packed array of positions per tick, not 300 property reads). The public surface is intentionally already shaped like this.
+
+What moves, in priority order:
+
+1. **Movement + collision** — integration, steering, separation, push-out, spatial buckets (the dominant cost).
+2. **Combat** — acquisition/validation and range checks (shares the buckets, comes along naturally).
+3. **Pathing** — flow-field builds and A*. These get *simpler* in C++: a full-map build drops to low single-digit ms, demoting the incremental budgeting from necessity to safety valve (kept anyway — bigger maps, weaker phones).
+4. **The substrate** — `Fixed`, `DRng`, `ProcRng`, `SimGrid`, `SimEntity`, command queue, state hash; the C++ systems consume them every operation.
+
+What stays GDScript permanently: everything outside the determinism wall — view/interpolation, UI + the catalog system, selection, camera, the editor, netcode session logic (it only ships commands, which is boundary-friendly by design), and all *data* (catalogs, maps, trigger trees). "UI as data" and "maps are data" are unaffected.
+
+**Verification is free, and M2 already paid for it:** the sim is seed + commands → hash stream, so the port harness is "run the GDScript sim and the C++ sim on identical inputs, assert identical `state_hash()` every tick." The determinism suite becomes a bit-exact parity suite, and the GDScript sim stays in-repo as the readable reference implementation. Porting semantics to watch: GDScript ints are 64-bit with truncating division (use `int64_t`, match `/` and `>>` exactly); `DRng` already masks to 32 bits so it ports cleanly. State hashing already uses no engine internals — `SimHash` (FNV-1a, 32-bit lanes, no overflow dependence) replaced Godot's built-in `hash()` during M2, so hash streams are comparable across Godot versions and across the GDScript/C++ implementations.
+
+Open: where the trigger interpreter (M5) runs. Triggers execute inside the sim for lockstep safety, but they fire rarely compared to per-unit ticks — a GDScript interpreter calling the sim's command API across the boundary may be fine, unless custom maps run per-tick-per-unit triggers. Decide when the trigger language's real usage patterns exist (see Open Questions).
 
 
 ## Controls
@@ -128,6 +165,7 @@ Console interaction details:
 
 - The console slides to two detents: half-height (viewport still visible and orderable above it) and full-height (for the World tab and complex menus).
 - Console state is preserved per tab — flicking it down and back up returns where you were.
+- **Command queueing lives in the console, not the viewport.** There's no viable gesture for "queue this" inside the viewport's select→order→deselect flow, so viewport orders always replace a unit's current orders. The sim itself supports per-unit order queues; composing them (waypoint routes, build queues, staged attacks) is console UI, arriving with the Strategy tab.
 - Anything the console can target (groups, locations) can be expressed through designations, which is why the designation button is load-bearing. A console order that needs a location can resolve it automatically from a designation: "build a factory at home base" picks a valid spot inside the home base designation without the player ever leaving the console.
 - **The popup viewport.** When the player wants precision instead of automation, the same order opens a viewport as a *popup over the console*, already jumped to the relevant designation. The player places the building exactly where they want, the popup closes, and the console comes back where they left it. Crucially, this popup is a separate camera: the real viewport underneath never moves, so swiping the console down afterward returns to exactly what the player was looking at before they opened the console. Both paths — auto-resolve and popup placement — must be equally low-friction; which one fires is the player's choice per order, not a settings toggle.
 
@@ -303,9 +341,9 @@ Early, but the constraints are known:
 
 Build order chosen so the riskiest theses (controls, deterministic sim) get proven first:
 
-- **M0 — Scaffold.** Godot project, repo conventions, sim/view split skeleton, camera rig, CI sanity. *(in progress)*
-- **M1 — Control prototype.** Selection (tap + lasso), context orders, hold-and-swipe radial buttons, reselect, camera gestures — against dumb stationary units on a flat plane. Goal: the controls demo feels good in the hand. **This milestone is the go/no-go for the whole concept.** Every M1 button/tab is instantiated from UI catalog definitions (see "UI as Data") — hardcoded bindings now are what make the editor impossible later.
-- **M2 — Sim core.** Fixed-point math, deterministic RNG, entities, grid, flow-field movement, combat resolution, command queue, state hashing, headless determinism tests (same seed + commands twice → identical hashes).
+- **M0 — Scaffold.** Godot project, repo conventions, sim/view split skeleton, camera rig, CI sanity. *(done)*
+- **M1 — Control prototype.** Selection (tap + lasso), context orders, hold-and-swipe radial buttons, reselect, camera gestures — against dumb stationary units on a flat plane. Goal: the controls demo feels good in the hand. **This milestone is the go/no-go for the whole concept.** Every M1 button/tab is instantiated from UI catalog definitions (see "UI as Data") — hardcoded bindings now are what make the editor impossible later. *(done)*
+- **M2 — Sim core.** Fixed-point math, deterministic RNG (incl. pseudo-random procs), entities, grid, flow-field movement, combat resolution, command queue, state hashing, headless determinism tests (same seed + commands twice → identical hashes). *(done — pending on-device playtest; perf measured against the budget, see Technical Foundations)*
 - **M3 — One faction playable.** Hive vs target dummies: strongholds, capsules, nanomachine economy, 4–5 units, the Build and Economy console tabs.
 - **M4 — Two factions + bots.** Rebel roster, supply, a competent scripted bot, win/loss. First full game loop.
 - **M5 — Editor MVP.** Terrain editing, object placement, catalog overrides, trigger GUI v1. Rebuild our own test map in it (pillar #3 check).
@@ -338,3 +376,5 @@ Tracked here so they don't silently become decisions:
 7. **Trusted Godot-native maps** — viable tier or permanently out of scope?
 8. **Monetization/distribution** — undecided, but money can never be used to buy an in-game advantage.
 9. **Cloud save backend** — map cloud saves + versioning are the project's first server-side dependency (before multiplayer relays even). Build vs. buy, auth model, and offline-first sync strategy all undecided; the editor must still work fully offline with sync as a layer on top.
+10. **Wall drawing UX** — drawn barricades (see "Structure footprints and drawn walls"): how the stroke is priced (per cell?), minimum/maximum length, how it coexists with the lasso gesture (it's modal — armed by the build-wall verb — but needs playtesting), and whether other structure types ever justify sub-tile footprints.
+11. **Trigger interpreter placement** — once the sim core is C++ (see "The GDExtension port"), does the M5 trigger interpreter stay GDScript calling the sim's command API across the boundary, or move inside? Depends on whether real custom maps run triggers per-tick-per-unit or only on events. Decide from usage, not up front.

@@ -1,9 +1,9 @@
 class_name UnitView
 extends Node3D
-## M1 dummy unit: a colored capsule (or box for resources) that can be
-## selected and walked to a point. The movement here is a view-layer
-## placeholder so the controls demo has something to push around — M2
-## replaces it with sim entities that this node merely visualizes.
+## Visualization of one sim entity: a colored capsule (or box for
+## resources). Holds no game state beyond selection highlight — position
+## comes from the sim each tick (interpolated by Main); orders go the
+## other way exclusively as SimCommands.
 
 enum Kind { UNIT, RESOURCE }
 
@@ -19,14 +19,14 @@ const COLORS := {
 
 var kind := Kind.UNIT
 var faction := FACTION_NEUTRAL
-var speed := 6.0
+## Sim entity this node visualizes; 0 = view-only (resources until M3).
+var entity_id := 0
 var selected := false:
 	set(value):
 		selected = value
 		if _ring != null:
 			_ring.visible = value
 
-var _move_target: Variant = null
 var _ring: MeshInstance3D
 
 
@@ -72,26 +72,3 @@ func _ready() -> void:
 	_ring.position.y = 0.08
 	_ring.visible = selected
 	add_child(_ring)
-
-
-func _process(delta: float) -> void:
-	if _move_target == null:
-		return
-	var target: Vector3 = _move_target
-	var to_target := target - position
-	to_target.y = 0.0
-	var step := speed * delta
-	if to_target.length() <= step:
-		position = Vector3(target.x, 0.0, target.z)
-		_move_target = null
-	else:
-		position += to_target.normalized() * step
-
-
-func order_move(target: Vector3) -> void:
-	if kind == Kind.UNIT and faction == FACTION_PLAYER:
-		_move_target = target
-
-
-func order_stop() -> void:
-	_move_target = null

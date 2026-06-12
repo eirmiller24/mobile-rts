@@ -36,5 +36,14 @@ jobs:
       - name: Determinism check
         run: ~/godot-bin/godot --headless --path . -s res://tests/determinism_check.gd
 
+      - name: Pathing check
+        run: ~/godot-bin/godot --headless --path . -s res://tests/pathing_check.gd
+
+      - name: Proc RNG check
+        run: ~/godot-bin/godot --headless --path . -s res://tests/proc_rng_check.gd
+
+      - name: Perf check
+        run: ~/godot-bin/godot --headless --path . -s res://tests/perf_check.gd
+
       - name: UI catalog check
         run: ~/godot-bin/godot --headless --path . -s res://tests/ui_catalog_check.gd
