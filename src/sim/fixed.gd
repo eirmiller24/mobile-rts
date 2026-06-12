@@ -27,6 +27,36 @@ static func to_int(a: int) -> int:
 	return a >> SHIFT
 
 
+## Parse a decimal string ("2.5", "-0.25") straight to 16.16 fixed point
+## without ever touching a float — catalog fixed values are sim inputs, so
+## their parse must be deterministic by construction (see design_m3.md
+## "Field types and fixed-point authoring"). Rounds half away from zero.
+## Callers (the catalog compiler) validate format; bad input asserts here.
+static func from_decimal(s: String) -> int:
+	var neg := s.begins_with("-")
+	var body := s.substr(1) if neg else s
+	var dot := body.find(".")
+	var int_part := body if dot == -1 else body.substr(0, dot)
+	var frac_part := "" if dot == -1 else body.substr(dot + 1)
+	assert(not int_part.is_empty() or not frac_part.is_empty(),
+			"empty decimal string")
+	var v := 0
+	for ch in int_part:
+		assert(ch >= "0" and ch <= "9", "bad decimal string")
+		v = v * 10 + (ch.unicode_at(0) - 48)
+	v <<= SHIFT
+	if not frac_part.is_empty():
+		assert(frac_part.length() <= 9, "fractional part too long")
+		var num := 0
+		var den := 1
+		for ch in frac_part:
+			assert(ch >= "0" and ch <= "9", "bad decimal string")
+			num = num * 10 + (ch.unicode_at(0) - 48)
+			den *= 10
+		v += (num * ONE * 2 + den) / (2 * den)
+	return -v if neg else v
+
+
 static func mul(a: int, b: int) -> int:
 	return (a * b) >> SHIFT
 

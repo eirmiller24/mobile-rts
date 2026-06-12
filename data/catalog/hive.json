@@ -1,0 +1,133 @@
+{
+	"hive.influence": {
+		"kind": "ability",
+		"sim": {
+			"ability_kind": "aura",
+			"radius": "12.0",
+			"affects": "own_structures",
+			"flags": ["territory"],
+			"modifiers": { "hp_regen": "2.0", "damage_taken": "1.0" }
+		},
+		"ui": { "label": "Influence", "description": "Projects Hive territory: covered structures regenerate and shed the feral penalty." }
+	},
+	"hive.influence_relay": {
+		"extends": "hive.influence",
+		"sim": { "radius": "6.0" },
+		"ui": { "label": "Influence (Relay)" }
+	},
+	"hive.capsule_build": {
+		"kind": "ability",
+		"sim": {
+			"ability_kind": "build",
+			"mechanic": "capsule",
+			"structures": ["hive.stronghold", "hive.relay", "hive.siphon"]
+		},
+		"ui": { "label": "Grow Structure", "description": "Order a structure anywhere the map allows. Outside territory a capsule flies to the site." }
+	},
+	"hive.root": {
+		"kind": "ability",
+		"sim": {
+			"ability_kind": "toggle_morph",
+			"morph_time": "1.5",
+			"morphed": {
+				"speed": "0", "damage": 25, "attack_range": "4.0",
+				"cooldown": "1.2", "hits_air": true
+			}
+		},
+		"ui": { "label": "Root", "description": "Anchor into an immobile turret form. Root again to release." }
+	},
+	"hive.burrow": {
+		"kind": "ability",
+		"sim": {
+			"ability_kind": "blink",
+			"range": "8.0",
+			"travel_time": "1.5",
+			"cooldown_time": "10.0"
+		},
+		"ui": { "label": "Burrow", "description": "Tunnel underground to a nearby point. Walls mean nothing down there." }
+	},
+	"hive.stronghold": {
+		"kind": "structure",
+		"sim": {
+			"hp": 1500, "foot_w": 6, "foot_h": 6, "armor_class": "structure",
+			"damage": 15, "attack_class": "shock", "attack_range": "7.0",
+			"acquire_range": "8.0", "cooldown": "1.0", "hits_air": true,
+			"cost_alloy": 400, "build_time": "45.0", "capsule_cost_alloy": 150,
+			"sight": "14.0", "damage_taken": "1.5",
+			"bandwidth_provided": 20, "nano_pool": 60,
+			"abilities": ["hive.influence", "hive.capsule_build"],
+			"trains": ["hive.mite", "hive.spitter", "hive.lancer", "hive.carapace"]
+		},
+		"view": { "shape": "box", "color": "33691e", "height": 2.4 },
+		"ui": { "label": "Stronghold", "description": "Heart of the Hive: territory, nanomachines, training, and a stinger of its own." }
+	},
+	"hive.relay": {
+		"kind": "structure",
+		"sim": {
+			"hp": 300, "foot_w": 2, "foot_h": 2, "armor_class": "structure",
+			"cost_alloy": 100, "build_time": "15.0", "capsule_cost_alloy": 75,
+			"sight": "8.0", "damage_taken": "1.5", "bandwidth_provided": 8,
+			"abilities": ["hive.influence_relay"]
+		},
+		"view": { "shape": "cylinder", "color": "558b2f", "height": 1.8 },
+		"ui": { "label": "Relay", "description": "Cheap bandwidth and a small territory bubble." }
+	},
+	"hive.siphon": {
+		"kind": "structure",
+		"sim": {
+			"hp": 400, "foot_w": 4, "foot_h": 4, "armor_class": "structure",
+			"cost_alloy": 150, "build_time": "20.0", "capsule_cost_alloy": 75,
+			"sight": "6.0", "damage_taken": "1.5",
+			"builds_on_vent": true
+		},
+		"view": { "shape": "cylinder", "color": "6a1b9a", "height": 1.2 },
+		"ui": { "label": "Siphon", "description": "Builds on a Flux vent and extracts it." }
+	},
+	"hive.mite": {
+		"kind": "unit",
+		"sim": {
+			"hp": 40, "damage": 5, "attack_class": "claw", "armor_class": "light",
+			"radius": "0.35", "speed": "3.5", "attack_range": "0.4",
+			"acquire_range": "6.0", "cooldown": "0.8", "sight": "7.0",
+			"bandwidth": 1, "cost_alloy": 25, "train_time": "8.0"
+		},
+		"view": { "shape": "capsule", "color": "9ccc65", "height": 0.9 },
+		"ui": { "label": "Mite", "description": "Cheap, fast melee swarmer." }
+	},
+	"hive.spitter": {
+		"kind": "unit",
+		"sim": {
+			"hp": 50, "damage": 9, "attack_class": "acid", "armor_class": "light",
+			"radius": "0.4", "speed": "3.0", "attack_range": "5.0",
+			"acquire_range": "7.0", "cooldown": "1.5", "sight": "8.0",
+			"hits_air": true,
+			"bandwidth": 2, "cost_alloy": 60, "train_time": "12.0"
+		},
+		"view": { "shape": "capsule", "color": "c0ca33", "height": 1.2 },
+		"ui": { "label": "Spitter", "description": "Fragile ranged acid — melts armor and structures." }
+	},
+	"hive.lancer": {
+		"kind": "unit",
+		"sim": {
+			"hp": 90, "damage": 14, "attack_class": "shock", "armor_class": "armored",
+			"radius": "0.45", "speed": "3.2", "attack_range": "0.5",
+			"acquire_range": "6.0", "cooldown": "1.2", "sight": "7.0",
+			"bandwidth": 2, "cost_alloy": 75, "cost_flux": 25, "train_time": "16.0",
+			"abilities": ["hive.burrow"]
+		},
+		"view": { "shape": "capsule", "color": "00897b", "height": 1.6 },
+		"ui": { "label": "Lancer", "description": "Shock trooper. Burrows toward designated points." }
+	},
+	"hive.carapace": {
+		"kind": "unit",
+		"sim": {
+			"hp": 180, "damage": 10, "attack_class": "claw", "armor_class": "armored",
+			"radius": "0.55", "speed": "2.0", "attack_range": "0.6",
+			"acquire_range": "6.0", "cooldown": "1.5", "sight": "7.0",
+			"bandwidth": 3, "cost_alloy": 100, "cost_flux": 50, "train_time": "24.0",
+			"abilities": ["hive.root"]
+		},
+		"view": { "shape": "capsule", "color": "2e7d32", "height": 1.4 },
+		"ui": { "label": "Carapace", "description": "Slow tank. Roots into an area-denial turret." }
+	}
+}

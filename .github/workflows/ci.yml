@@ -42,6 +42,9 @@ jobs:
       - name: Proc RNG check
         run: ~/godot-bin/godot --headless --path . -s res://tests/proc_rng_check.gd
 
+      - name: Catalog check
+        run: ~/godot-bin/godot --headless --path . -s res://tests/catalog_check.gd
+
       - name: Perf check
         run: ~/godot-bin/godot --headless --path . -s res://tests/perf_check.gd
 

@@ -1,0 +1,52 @@
+{
+	"core.classes": {
+		"kind": "classes",
+		"sim": {
+			"attack_classes": ["claw", "acid", "shock"],
+			"armor_classes": ["light", "armored", "structure"],
+			"matrix": {
+				"claw":  { "light": "1.0",  "armored": "0.75", "structure": "0.75" },
+				"acid":  { "light": "0.75", "armored": "1.5",  "structure": "1.25" },
+				"shock": { "light": "1.5",  "armored": "1.0",  "structure": "0.75" }
+			},
+			"capsule_time": "3.0",
+			"capsule_hp": 80,
+			"alloy_rate": "0.1",
+			"flux_rate": "0.05",
+			"assist_rate": "0.5",
+			"repair_rate": "1.0"
+		}
+	},
+	"core.alloy_deposit": {
+		"kind": "resource",
+		"sim": { "resource": "alloy", "amount": 1500, "throughput": "2.0", "foot_w": 2, "foot_h": 2 },
+		"view": { "shape": "box", "color": "fdd835", "height": 0.8 },
+		"ui": { "label": "Alloy Deposit", "description": "Surface alloy. Mined by stronghold nanomachines in range." }
+	},
+	"core.flux_vent": {
+		"kind": "resource",
+		"sim": { "resource": "flux", "amount": 1000, "throughput": "1.0", "foot_w": 4, "foot_h": 4 },
+		"view": { "shape": "box", "color": "7e57c2", "height": 0.4 },
+		"ui": { "label": "Flux Vent", "description": "Cannot be mined directly — build a Siphon on top." }
+	},
+	"core.training_dummy": {
+		"kind": "structure",
+		"sim": {
+			"hp": 500, "foot_w": 2, "foot_h": 2, "armor_class": "armored",
+			"dummy": true, "build_time": "1.0"
+		},
+		"view": { "shape": "box", "color": "8d6e63", "height": 1.4 },
+		"ui": { "label": "Training Dummy", "description": "Hits back never, complains never." }
+	},
+	"core.thorn_turret": {
+		"kind": "structure",
+		"sim": {
+			"hp": 350, "foot_w": 2, "foot_h": 2, "armor_class": "armored",
+			"damage": 10, "attack_class": "claw", "attack_range": "5.0",
+			"acquire_range": "7.0", "cooldown": "1.0", "hits_air": true,
+			"sight": "7.0", "build_time": "1.0"
+		},
+		"view": { "shape": "cylinder", "color": "d84315", "height": 1.6 },
+		"ui": { "label": "Thorn Turret", "description": "Hostile emplacement. Shoots ground and air." }
+	}
+}
