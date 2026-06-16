@@ -7,13 +7,13 @@ touching sim code.
 
 ## Environment
 
-- Development happens in a devcontainer that does NOT have Godot installed.
-  Author scenes/scripts as text; the user opens/runs the project on the host
-  via flatpak (`flatpak run org.godotengine.Godot`, version 4.6.3).
+- Godot 4.6.3 IS installed in the devcontainer, on PATH as `godot`. Run
+  headless checks and the project directly in the container. The user can
+  also run on the host via flatpak (`flatpak run org.godotengine.Godot`).
 - GDScript only — standard Godot build, no .NET/C#. Blender 4.2 is available
   in the container for the asset pipeline (Blender → glTF).
-- Headless checks the user can run on the host (one per script in `tests/`):
-  `flatpak run org.godotengine.Godot --headless --path . -s res://tests/determinism_check.gd`
+- Headless checks (one per script in `tests/`), runnable in the container:
+  `godot --headless --path . -s res://tests/determinism_check.gd`
 
 ## Layout
 

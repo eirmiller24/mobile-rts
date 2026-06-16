@@ -28,6 +28,10 @@ const VISION_PERIOD := 4
 const SMALL_GROUP := 3
 ## A move order completes within this distance of the goal (fixed).
 const ARRIVE_DIST := SimGrid.CELL
+## A path waypoint is considered reached within this distance (fixed). Theta*
+## segments are any-angle, so a unit rarely lands exactly on the corner cell;
+## this lets it advance once it closes on the corner.
+const WAYPOINT_REACH := SimGrid.CELL
 ## Spatial bucket size for neighbor queries: 2.0 world units.
 const BUCKET_SHIFT := Fixed.SHIFT + 1
 const FLOW_CACHE_MAX := 32
@@ -654,7 +658,7 @@ func _start_order(e: SimEntity) -> void:
 				e.goal_key = goal
 				return
 			if o["small"]:
-				e.path = Pathing.astar(grid, from, goal)
+				e.path = Pathing.theta_star(grid, from, goal)
 				if not e.path.is_empty():
 					e.goal_key = goal
 					return
@@ -896,6 +900,17 @@ func _waypoint(e: SimEntity, o: Dictionary) -> Vector2i:
 		for i in range(e.path_i, e.path.size()):
 			if e.path[i] == cur:
 				e.path_i = i + 1
+		# Then consume any leading waypoints we've already closed on. Theta*
+		# corners are any-angle, so we seldom land exactly in the corner cell;
+		# advance one at a time (never skipping ahead to a far waypoint).
+		while e.path_i < e.path.size():
+			var pc := e.path[e.path_i]
+			var px := grid.cell_center(pc % grid.width)
+			var py := grid.cell_center(pc / grid.width)
+			if _length(px - e.x, py - e.y) <= WAYPOINT_REACH:
+				e.path_i += 1
+			else:
+				break
 		if e.path_i >= e.path.size():
 			return Vector2i(o["x"], o["y"])
 		var c := e.path[e.path_i]
@@ -907,10 +922,60 @@ func _waypoint(e: SimEntity, o: Dictionary) -> Vector2i:
 	var entry := _flow_entry(e.goal_key, PackedInt32Array([cur]))
 	if entry.is_empty():
 		return Vector2i(e.x, e.y) # field still building: hold position
+	return _flow_waypoint(e, entry, cur)
+
+
+## Heading for a unit following the shared flow field. Instead of stepping
+## toward next[cur] (one of only 8 directions), descend the local gradient of
+## the cost field for an any-angle direction. Falls back to next[cur]'s center
+## where the gradient is flat, and reports GIVE_UP when the goal is
+## unreachable from here.
+func _flow_waypoint(e: SimEntity, entry: Dictionary, cur: int) -> Vector2i:
 	var nxt: int = entry["next"][cur]
 	if nxt == -1:
 		return GIVE_UP
-	return Vector2i(grid.cell_center(nxt % grid.width), grid.cell_center(nxt / grid.width))
+	var dist: PackedInt32Array = entry["dist"]
+	var cx := cur % grid.width
+	var cy := cur / grid.width
+	var gx := _grad_axis(dist, cx, cy, 1, 0)
+	var gy := _grad_axis(dist, cx, cy, 0, 1)
+	if gx == 0 and gy == 0:
+		# Flat field (e.g. hard against a blocker): use the discrete step.
+		return Vector2i(grid.cell_center(nxt % grid.width), grid.cell_center(nxt / grid.width))
+	# gx/gy are small cost differences; scale them to a real offset so the
+	# mover (which normalizes) reads only the direction, well past one step.
+	return Vector2i(e.x + gx * SimGrid.CELL, e.y + gy * SimGrid.CELL)
+
+
+## One axis of the cost-field gradient at (cx, cy), measured along (dx, dy):
+## positive points toward the lower-cost (closer-to-goal) side. Central
+## difference where both neighbors are usable; one-sided where only one is (so
+## headings near a wall lean away from it, not into it); 0 where neither is.
+func _grad_axis(dist: PackedInt32Array, cx: int, cy: int, dx: int, dy: int) -> int:
+	var here: int = dist[cy * grid.width + cx]
+	var back := _cost_at(dist, cx - dx, cy - dy)
+	var fwd := _cost_at(dist, cx + dx, cy + dy)
+	if back != -1 and fwd != -1:
+		return back - fwd
+	if fwd != -1:
+		return here - fwd
+	if back != -1:
+		return back - here
+	return 0
+
+
+## Settled cost at a neighbor cell, or -1 if it is off the grid, blocked, or
+## not yet reached — so the gradient ignores cells it must not steer into.
+func _cost_at(dist: PackedInt32Array, cx: int, cy: int) -> int:
+	if cx < 0 or cy < 0 or cx >= grid.width or cy >= grid.height:
+		return -1
+	var i := cy * grid.width + cx
+	if grid.is_blocked_index(i):
+		return -1
+	var d: int = dist[i]
+	if d == Pathing.UNREACHABLE:
+		return -1
+	return d
 
 
 ## Boids-lite local avoidance: if the desired direction (dx, dy, length d)

@@ -150,37 +150,81 @@ class FlowBuild:
 		return pops
 
 
-## A* from `from_index` to `to_index`. Returns the path as cell indices,
-## excluding the start cell and including the goal; empty if unreachable
-## or already there.
-static func astar(grid: SimGrid, from_index: int, to_index: int) -> PackedInt32Array:
+## Lazy Theta* from `from_index` to `to_index`: any-angle pathfinding over
+## the same pathing grid. Returns the path as cell indices, excluding the
+## start cell and including the goal; empty if unreachable or already there.
+##
+## Unlike plain A*, a node's parent may be any earlier node with line of
+## sight (not just the cell it was expanded from), so the path is a chain
+## of straight any-angle segments through corners — units no longer step in
+## 45-degree increments. The "lazy" variant assumes line of sight when
+## relaxing (cheap) and only verifies it when the node is popped, re-parenting
+## to the best settled neighbor if the assumption was wrong.
+##
+## Costs are integer Euclidean distances scaled by COST_STRAIGHT (see
+## _euclid), so they share units with the flow field's 5/7 step costs. The
+## heuristic is the same straight-line distance — admissible for any-angle
+## movement (octile would overestimate it).
+static func theta_star(grid: SimGrid, from_index: int, to_index: int) -> PackedInt32Array:
 	var path := PackedInt32Array()
 	if from_index == to_index:
 		return path
-	var n := grid.width * grid.height
+	var w := grid.width
+	var n := w * grid.height
 	var g := PackedInt32Array()
 	g.resize(n)
 	g.fill(UNREACHABLE)
-	var came := PackedInt32Array()
-	came.resize(n)
-	came.fill(-1)
+	var parent := PackedInt32Array()
+	parent.resize(n)
+	parent.fill(-1)
+	var closed := PackedByteArray()
+	closed.resize(n)
 
-	var tx := to_index % grid.width
-	var ty := to_index / grid.width
+	var tx := to_index % w
+	var ty := to_index / w
 	var heap := PackedInt64Array()
 	g[from_index] = 0
-	_heap_push_keyed(heap, _octile(from_index % grid.width, from_index / grid.width, tx, ty), from_index)
+	parent[from_index] = from_index # the root is its own parent
+	_heap_push_keyed(heap, _euclid(from_index % w, from_index / w, tx, ty), from_index)
 
 	while heap.size() > 0:
 		var entry := _heap_pop(heap)
 		var u := int(entry & INDEX_MASK)
-		var ux := u % grid.width
-		var uy := u / grid.width
-		var f := int(entry >> INDEX_BITS)
-		if f != g[u] + _octile(ux, uy, tx, ty):
-			continue # stale entry
+		if closed[u] == 1:
+			continue # stale heap entry (lazy deletion)
+		var ux := u % w
+		var uy := u / w
+		# Lazy set-vertex: the parent recorded during relaxation assumed line
+		# of sight. Verify it now; if it fails, re-parent u to the settled
+		# neighbor that reaches it most cheaply (ties to the lowest index).
+		var pu := parent[u]
+		if pu != u and not los(grid, pu, u):
+			var best_g := UNREACHABLE
+			var best_p := -1
+			for dir in DIRS:
+				var vx := ux + dir.x
+				var vy := uy + dir.y
+				if not grid.in_bounds(vx, vy):
+					continue
+				if not _diagonal_open(grid, ux, uy, dir):
+					continue # a diagonal re-parent must not cut a blocked corner
+				var v := vy * w + vx
+				if closed[v] != 1:
+					continue
+				var cg := g[v] + _euclid(vx, vy, ux, uy)
+				if best_p == -1 or cg < best_g or (cg == best_g and v < best_p):
+					best_g = cg
+					best_p = v
+			if best_p == -1:
+				continue # no settled neighbor sees u; drop it
+			parent[u] = best_p
+			g[u] = best_g
+			pu = best_p
+		closed[u] = 1
 		if u == to_index:
 			break
+		var pux := pu % w
+		var puy := pu / w
 		for dir in DIRS:
 			var vx := ux + dir.x
 			var vy := uy + dir.y
@@ -188,22 +232,68 @@ static func astar(grid: SimGrid, from_index: int, to_index: int) -> PackedInt32A
 				continue
 			if not _diagonal_open(grid, ux, uy, dir):
 				continue
-			var cost := COST_DIAGONAL if dir.x != 0 and dir.y != 0 else COST_STRAIGHT
-			var v := vy * grid.width + vx
-			var ng := g[u] + cost
+			var v := vy * w + vx
+			if closed[v] == 1:
+				continue
+			# Path 2 (optimistic): route v straight from u's parent, assuming
+			# line of sight — checked when v is later popped.
+			var ng := g[pu] + _euclid(pux, puy, vx, vy)
 			if ng < g[v]:
 				g[v] = ng
-				came[v] = u
-				_heap_push_keyed(heap, ng + _octile(vx, vy, tx, ty), v)
+				parent[v] = pu
+				_heap_push_keyed(heap, ng + _euclid(vx, vy, tx, ty), v)
 
-	if came[to_index] == -1:
+	if parent[to_index] == -1:
 		return path
 	var c := to_index
 	while c != from_index:
 		path.append(c)
-		c = came[c]
+		c = parent[c]
 	path.reverse()
 	return path
+
+
+## True if a straight line between the two cells' centers crosses only
+## unblocked cells. Integer supercover traversal (deterministic, no floats):
+## walks every cell the segment touches, and at an exact corner crossing
+## rejects the move unless both flanking cells are open (no corner cutting,
+## matching _diagonal_open).
+static func los(grid: SimGrid, c0: int, c1: int) -> bool:
+	var w := grid.width
+	var x0 := c0 % w
+	var y0 := c0 / w
+	var x1 := c1 % w
+	var y1 := c1 / w
+	var dx := absi(x1 - x0)
+	var dy := absi(y1 - y0)
+	var x := x0
+	var y := y0
+	var x_inc := 1 if x1 > x0 else -1
+	var y_inc := 1 if y1 > y0 else -1
+	var error := dx - dy
+	dx *= 2
+	dy *= 2
+	while true:
+		if grid.is_blocked(x, y):
+			return false
+		if x == x1 and y == y1:
+			return true # reached the endpoint with everything clear
+		if error > 0:
+			x += x_inc
+			error -= dy
+		elif error < 0:
+			y += y_inc
+			error += dx
+		else:
+			# Segment passes exactly through the corner shared by four cells;
+			# reject if either cell flanking the diagonal step is blocked.
+			if grid.is_blocked(x + x_inc, y) or grid.is_blocked(x, y + y_inc):
+				return false
+			x += x_inc
+			y += y_inc
+			error -= dy
+			error += dx
+	return true # unreachable
 
 
 ## Diagonal moves require both adjacent orthogonals open (no corner cutting).
@@ -213,11 +303,32 @@ static func _diagonal_open(grid: SimGrid, ux: int, uy: int, dir: Vector2i) -> bo
 	return not grid.is_blocked(ux + dir.x, uy) and not grid.is_blocked(ux, uy + dir.y)
 
 
-## Octile distance in the same cost units as the step costs (admissible).
-static func _octile(ax: int, ay: int, bx: int, by: int) -> int:
-	var dx := absi(ax - bx)
-	var dy := absi(ay - by)
-	return COST_STRAIGHT * maxi(dx, dy) + (COST_DIAGONAL - COST_STRAIGHT) * mini(dx, dy)
+## Straight-line distance between two cells in step-cost units: floor of
+## COST_STRAIGHT * sqrt(dx^2 + dy^2), computed as isqrt(25*(dx^2+dy^2)) so it
+## stays integer and deterministic. Admissible as a Theta* heuristic.
+static func _euclid(ax: int, ay: int, bx: int, by: int) -> int:
+	var dx := ax - bx
+	var dy := ay - by
+	return _isqrt(COST_STRAIGHT * COST_STRAIGHT * (dx * dx + dy * dy))
+
+
+## Floor of the integer square root via Newton's method (deterministic,
+## same shape as Fixed.sqrt but on a plain integer).
+static func _isqrt(v: int) -> int:
+	if v <= 0:
+		return 0
+	var bits := 0
+	var t := v
+	while t > 0:
+		t >>= 1
+		bits += 1
+	var x := 1 << ((bits + 1) >> 1) # 2^ceil(bits/2) > sqrt(v): a valid seed
+	while true:
+		var nx := (x + v / x) >> 1
+		if nx >= x:
+			return x
+		x = nx
+	return x # unreachable
 
 
 static func _heap_push_keyed(heap: PackedInt64Array, priority: int, cell_index: int) -> void:
