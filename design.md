@@ -372,6 +372,12 @@ Each milestone ends with something playable on a phone, even if ugly.
 - Ranked ladder and matchmaking
 - In-game map browser with ratings/moderation
 - Co-op vs AI modes (editor-built, naturally)
+- Player-scriptable AI: let the community author a complete, general AI that
+  slots into a player slot in place of the built-in bot — for opponents that
+  play normal maps better than the defaults. Distinct from M5 trigger-scripted
+  scenario AI (waves, boss phases); this is a general melee brain. Deferred
+  until the ask is real; the bot's command-source seam (see design_m4.md §8)
+  is the plug it would use.
 
 
 ## Open Questions
