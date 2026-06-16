@@ -24,10 +24,12 @@ func _init() -> void:
 	slots.resize(MAX_SLOTS)
 
 
-## Assign unit ids to a slot (-1 = first free). Returns the slot used, or
-## -1 when everything is taken.
-func assign_group(ids: Array[int], slot: int = -1) -> int:
-	if ids.is_empty():
+## Assign unit ids to a slot (-1 = first free). Returns the slot used, or -1
+## when everything is taken. `allow_empty` makes a zero-unit group (the
+## Organize tab / control-button "new group" gesture) — units can be added to
+## it later, and `prune` leaves a deliberately-empty group alone.
+func assign_group(ids: Array[int], slot: int = -1, allow_empty: bool = false) -> int:
+	if ids.is_empty() and not allow_empty:
 		return -1
 	if slot == -1:
 		slot = _first_free()
@@ -35,6 +37,21 @@ func assign_group(ids: Array[int], slot: int = -1) -> int:
 		return -1
 	slots[slot] = {"kind": "group", "name": _free_group_name(),
 			"ids": ids.duplicate()}
+	changed.emit()
+	return slot
+
+
+## Overwrite a slot's group membership with `ids`, preserving the slot's name
+## when it already holds a group ("set this group = current selection"); a
+## fresh name is minted for an empty slot. Returns the slot, or -1 on bad input.
+func set_group(slot: int, ids: Array[int]) -> int:
+	if slot < 0 or slot >= MAX_SLOTS or ids.is_empty():
+		return -1
+	var name := _free_group_name()
+	var existing: Variant = slots[slot]
+	if existing != null and existing["kind"] == "group":
+		name = existing["name"]
+	slots[slot] = {"kind": "group", "name": name, "ids": ids.duplicate()}
 	changed.emit()
 	return slot
 

@@ -24,6 +24,9 @@ var arm_placement := Callable()
 var cancel_placement := Callable()
 ## func(text: String) — HUD status line.
 var status := Callable()
+## func() -> Array[int] — the current viewport selection's entity ids, sorted.
+## Used by the Organize roster to snapshot a new control group.
+var selected_ids := Callable()
 
 
 func affordable(type_key: int) -> bool:

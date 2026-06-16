@@ -42,6 +42,7 @@
 	"console": {
 		"tabs": [
 			{ "id": "build",    "label": "Build",    "screen": "build" },
+			{ "id": "train",    "label": "Train",    "screen": "build_train" },
 			{ "id": "strategy", "label": "Strategy", "screen": "strategy" },
 			{ "id": "tactics",  "label": "Tactics",  "screen": "tactics" },
 			{ "id": "economy",  "label": "Economy",  "screen": "economy" },
@@ -52,8 +53,7 @@
 			"build": {
 				"title": "Build",
 				"widgets": [
-					{ "type": "structure_grid", "params": { "placement_screen": "build_place" } },
-					{ "type": "button", "label": "Training...", "action": "screen:build_train" }
+					{ "type": "structure_grid", "params": { "placement_screen": "build_place" } }
 				]
 			},
 			"build_place": {
@@ -91,7 +91,7 @@
 			"organize": {
 				"title": "Organize",
 				"widgets": [
-					{ "type": "label", "label": "Designation management lands in M4. Long-press the map to pin a location; the Desig button assigns groups." }
+					{ "type": "group_roster" }
 				]
 			},
 			"world": {

@@ -157,15 +157,15 @@ class QueueStrip:
 				[structure_id] as Array[int], {"index": index})
 
 
-## Per-stronghold nanomachine allocation sliders (design_m3.md §6.6).
-## Sliders share the pool — pushing one past the remainder steals from
-## idle first, then proportionally from the others — and ALLOCATE_ECONOMY
-## fires on release, not per drag-frame.
+## Per-stronghold nanomachine allocation (design_m3.md §6.6), expressed as
+## two fractions rather than three raw counts: one slider splits the pool
+## between mining and repair, the other splits the mining share between
+## alloy and flux. The sim still stores three explicit counts — this widget
+## just converts. ALLOCATE_ECONOMY fires on release, not per drag-frame.
 class AllocSliders:
 	extends VBoxContainer
-	const CATS := ["Alloy", "Flux", "Assist"]
 	var ctx: GameUIContext
-	var _rows := {} # stronghold id -> {sliders: Array[HSlider], info: Label}
+	var _rows := {} # stronghold id -> {split, focus: HSlider, info, title, pool}
 	var _sig := ""
 	var _accum := 999.0
 	var _dragging := false
@@ -201,35 +201,39 @@ class AllocSliders:
 			var e: SimEntity = ctx.sim.entities[id]
 			var pool: int = ctx.sim.catalog.sim_of(e.type_key)["nano_pool"]
 			var box := VBoxContainer.new()
+			box.add_theme_constant_override("separation", 6)
 			add_child(box)
 			var title := Label.new()
-			title.text = "%s #%d — %d nanomachines" % [ctx.label_of(e.type_key), id, pool]
 			box.add_child(title)
-			var sliders: Array[HSlider] = []
-			for c in 3:
-				var row := HBoxContainer.new()
-				row.add_theme_constant_override("separation", 10)
-				box.add_child(row)
-				var cat := Label.new()
-				cat.text = CATS[c]
-				cat.custom_minimum_size.x = 70
-				row.add_child(cat)
-				var slider := HSlider.new()
-				slider.max_value = pool
-				slider.step = 1
-				slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-				slider.custom_minimum_size = Vector2(200, 36)
-				slider.drag_started.connect(func() -> void: _dragging = true)
-				slider.drag_ended.connect(_on_release.bind(id, c))
-				row.add_child(slider)
-				var val := Label.new()
-				val.custom_minimum_size.x = 40
-				row.add_child(val)
-				sliders.append(slider)
+			# Slider value = share of the right-hand label, so the thumb sits
+			# under the option it favors.
+			var split := _make_slider(box, id, "Mine ◂▸ Repair")
+			var focus := _make_slider(box, id, "Alloy ◂▸ Flux")
 			var info := Label.new()
 			info.modulate = Color(1, 1, 1, 0.65)
+			info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			box.add_child(info)
-			_rows[id] = {"sliders": sliders, "info": info, "pool": pool}
+			_rows[id] = {"split": split, "focus": focus, "info": info,
+					"title": title, "pool": pool}
+
+	func _make_slider(box: VBoxContainer, id: int, caption: String) -> HSlider:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		box.add_child(row)
+		var cap := Label.new()
+		cap.text = caption
+		cap.custom_minimum_size.x = 120
+		row.add_child(cap)
+		var slider := HSlider.new()
+		slider.min_value = 0
+		slider.max_value = 100
+		slider.step = 1
+		slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slider.custom_minimum_size = Vector2(200, 44)
+		slider.drag_started.connect(func() -> void: _dragging = true)
+		slider.drag_ended.connect(_on_release.bind(id))
+		row.add_child(slider)
+		return slider
 
 	func _refresh_values(ids: PackedInt32Array) -> void:
 		for id in ids:
@@ -237,48 +241,150 @@ class AllocSliders:
 				continue
 			var e: SimEntity = ctx.sim.entities[id]
 			var row: Dictionary = _rows[id]
-			for c in 3:
-				var slider: HSlider = row["sliders"][c]
-				slider.set_value_no_signal(e.nano_alloc[c])
-				(slider.get_parent().get_child(2) as Label).text = str(e.nano_alloc[c])
+			var pool: int = row["pool"]
+			var alloc := e.nano_alloc
+			var assist: int = alloc[2]
+			var resource: int = alloc[0] + alloc[1]
+			var repair_pct := 0 if pool <= 0 else roundi(assist * 100.0 / pool)
+			var flux_pct := 50 if resource <= 0 else roundi(alloc[1] * 100.0 / resource)
+			(row["split"] as HSlider).set_value_no_signal(repair_pct)
+			(row["focus"] as HSlider).set_value_no_signal(flux_pct)
+			row["title"].text = "%s #%d — %d nanomachines" % [
+					ctx.label_of(e.type_key), id, pool]
 			var income: Dictionary = ctx.sim.income.get(id,
-					{"alloy": 0, "flux": 0, "assist_used": 0, "idle": 0})
-			var idle: int = row["pool"] - e.nano_alloc[0] - e.nano_alloc[1] - e.nano_alloc[2]
-			var text := "idle: %d   income: %.1f alloy/s, %.1f flux/s" % [idle,
+					{"alloy": 0, "flux": 0, "idle_assist": 0})
+			var text := "mine %d (%d alloy / %d flux)   repair %d" % [
+					resource, alloc[0], alloc[1], assist]
+			var idle_assist: int = income.get("idle_assist", 0)
+			if idle_assist > 0:
+				text += "   ↩ %d idle repair → mining" % idle_assist
+			text += "\nincome: %.1f alloy/s, %.1f flux/s" % [
 					Fixed.to_float(income["alloy"]) * Sim.TICK_RATE,
 					Fixed.to_float(income["flux"]) * Sim.TICK_RATE]
-			if e.nano_alloc[0] > 0 and income["alloy"] == 0:
-				text += "   ⚠ alloy allocation idle: no deposits in range"
-			if e.nano_alloc[1] > 0 and income["flux"] == 0:
-				text += "   ⚠ flux allocation idle: no working siphons in range"
+			if alloc[0] > 0 and income["alloy"] == 0:
+				text += "   ⚠ no alloy deposits in range"
+			if alloc[1] > 0 and income["flux"] == 0:
+				text += "   ⚠ no working siphons in range"
 			row["info"].text = text
 
-	## Re-balance around the moved slider: idle absorbs first, then the
-	## other two give way proportionally. Then one ALLOCATE_ECONOMY.
-	func _on_release(_value_changed: bool, id: int, moved: int) -> void:
+	## Convert the two fractions back into three counts that exactly sum to
+	## the pool, then fire one ALLOCATE_ECONOMY.
+	func _on_release(_value_changed: bool, id: int) -> void:
 		_dragging = false
 		if not _rows.has(id) or not ctx.sim.entities.has(id):
 			return
 		var row: Dictionary = _rows[id]
 		var pool: int = row["pool"]
-		var values := [0, 0, 0]
-		for c in 3:
-			values[c] = int((row["sliders"][c] as HSlider).value)
-		var excess: int = values[0] + values[1] + values[2] - pool
-		var others: Array[int] = []
-		for c in 3:
-			if c != moved:
-				others.append(c)
-		while excess > 0:
-			var gave := false
-			for c in others:
-				if excess > 0 and values[c] > 0:
-					values[c] -= 1
-					excess -= 1
-					gave = true
-			if not gave:
-				values[moved] -= excess # others empty: clamp the moved one
-				excess = 0
+		var repair_pct := int((row["split"] as HSlider).value)
+		var flux_pct := int((row["focus"] as HSlider).value)
+		var assist := roundi(pool * repair_pct / 100.0)
+		var resource := pool - assist
+		var flux := roundi(resource * flux_pct / 100.0)
+		var alloy := resource - flux
 		ctx.issue.call(SimCommand.Kind.ALLOCATE_ECONOMY, [id] as Array[int],
-				{"alloy": values[0], "flux": values[1], "assist": values[2]})
+				{"alloy": alloy, "flux": flux, "assist": assist})
 		_accum = REFRESH # refresh soon to show the applied state
+
+
+## Organize tab roster (design.md "Organize"): a button that snapshots the
+## current viewport selection into a new control group, plus a read-only list
+## of every group with each member's live health. Group assign/recall now lives
+## here and on the top-bar chips; the control button only edits the selection.
+## Display-only for now — swapping units between groups lands later.
+class GroupRoster:
+	extends VBoxContainer
+	var ctx: GameUIContext
+	var _sig := ""
+	var _accum := 999.0
+
+	func _init(p_ctx: GameUIContext) -> void:
+		ctx = p_ctx
+		add_theme_constant_override("separation", 12)
+		# Group membership changes off-cadence (assign/recall, dead-unit prune);
+		# refresh promptly when it does.
+		ctx.designations.changed.connect(func() -> void: _accum = REFRESH)
+
+	func _process(delta: float) -> void:
+		if not is_visible_in_tree():
+			return
+		_accum += delta
+		if _accum < REFRESH:
+			return
+		_accum = 0.0
+		var groups := _groups()
+		var sig := ""
+		for g: Dictionary in groups:
+			sig += "%d:%s:[" % [g["slot"], g["entry"]["name"]]
+			for id: int in g["entry"]["ids"]:
+				var e: SimEntity = ctx.sim.entities.get(id)
+				sig += "%d=%d/%d," % [id, e.hp if e else 0, e.max_hp if e else 0]
+			sig += "];"
+		if sig == _sig:
+			return
+		_sig = sig
+		_rebuild(groups)
+
+	func _rebuild(groups: Array) -> void:
+		for child in get_children():
+			child.queue_free()
+		# Always enabled: with a selection it snapshots those units, otherwise
+		# it makes an empty group to fill later (control button + chip, or the
+		# control-group gesture).
+		var create := Button.new()
+		create.text = "New control group"
+		create.custom_minimum_size.y = 52.0
+		create.pressed.connect(_on_create)
+		add_child(create)
+		if groups.is_empty():
+			var empty := Label.new()
+			empty.text = "No control groups yet. Tap New control group to make one (empty if nothing is selected)."
+			empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			empty.modulate = Color(1, 1, 1, 0.6)
+			add_child(empty)
+			return
+		for g: Dictionary in groups:
+			var e: Dictionary = g["entry"]
+			var header := Label.new()
+			header.text = "%s (%d)" % [e["name"], e["ids"].size()]
+			header.add_theme_font_size_override("font_size", 18)
+			header.add_theme_color_override("font_color", Color(0.8, 1.0, 0.85))
+			add_child(header)
+			for id: int in e["ids"]:
+				add_child(_member_row(id))
+
+	func _member_row(id: int) -> Control:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var ent: SimEntity = ctx.sim.entities.get(id)
+		var name_label := Label.new()
+		name_label.custom_minimum_size.x = 150
+		name_label.text = "%s #%d" % [ctx.label_of(ent.type_key), id] if ent \
+				else "#%d (lost)" % id
+		row.add_child(name_label)
+		var bar := ProgressBar.new()
+		bar.custom_minimum_size = Vector2(160, 22)
+		bar.min_value = 0
+		bar.max_value = ent.max_hp if ent else 1
+		bar.value = ent.hp if ent else 0
+		bar.show_percentage = false
+		row.add_child(bar)
+		var hp_label := Label.new()
+		hp_label.text = "%d/%d" % [ent.hp, ent.max_hp] if ent else "—"
+		hp_label.modulate = Color(1, 1, 1, 0.7)
+		row.add_child(hp_label)
+		return row
+
+	func _on_create() -> void:
+		var ids: Array[int] = _selection()
+		var slot := ctx.designations.assign_group(ids, -1, true)
+		if ctx.status.is_valid():
+			ctx.status.call("%s = %d units"
+					% [ctx.designations.entry(slot)["name"], ids.size()] if slot != -1
+					else "no free group slots")
+
+	func _groups() -> Array:
+		return ctx.designations.occupied().filter(func(o: Dictionary) -> bool:
+			return o["entry"]["kind"] == "group")
+
+	func _selection() -> Array[int]:
+		return ctx.selected_ids.call() if ctx.selected_ids.is_valid() else [] as Array[int]

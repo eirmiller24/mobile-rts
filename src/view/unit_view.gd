@@ -27,6 +27,8 @@ var kind := Kind.UNIT
 var faction := FACTION_NEUTRAL
 ## Sim entity this node visualizes.
 var entity_id := 0
+## Catalog type of the entity, for "select all of this type" gestures.
+var type_key := 0
 ## Only own units enter the selection; everything is a valid order target.
 var selectable := false
 var selected := false:
@@ -55,6 +57,7 @@ static func from_entity(e: SimEntity, view_block: Dictionary,
 	u.kind = Kind.UNIT if e.is_unit() else Kind.RESOURCE
 	u.faction = p_faction
 	u.entity_id = e.id
+	u.type_key = e.type_key
 	u.position = pos
 	u.selectable = e.is_unit() and p_faction == FACTION_PLAYER
 	u._initial_amount = e.amount

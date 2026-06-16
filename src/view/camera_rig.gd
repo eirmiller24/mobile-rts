@@ -72,7 +72,7 @@ func _handle_drag(event: InputEventScreenDrag) -> void:
 	# Rotate from twist angle.
 	if rotation_enabled:
 		var angle_delta := (before - anchor).angle_to(after - anchor)
-		_yaw -= angle_delta
+		_yaw += angle_delta
 	_update_camera()
 
 

@@ -1,8 +1,8 @@
 class_name Hud
 extends CanvasLayer
 ## Assembles the in-game UI from a UICatalog: side button column on the
-## right, reselect in the bottom-left corner, lasso overlay, selection
-## status. Pure construction — every binding comes from the catalog.
+## right (verbs, abilities, the held control modifier), lasso overlay,
+## selection status. Pure construction — every binding comes from the catalog.
 
 signal command_chosen(command_id: String)
 
@@ -11,9 +11,9 @@ var catalog: UICatalog
 var designations: Designations
 var ctx: GameUIContext
 var buttons: Array[RadialButton] = []
-var reselect: ReselectButton
-var designation_button: DesignationButton
+var control_button: ControlButton
 var chips: DesignationChips
+var locations_button: LocationsButton
 var lasso_overlay: LassoOverlay
 var status_label: Label
 var console: ConsoleView
@@ -48,49 +48,26 @@ func _ready() -> void:
 	lasso_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(lasso_overlay)
 
-	var column := VBoxContainer.new()
-	var separation := 28
-	column.add_theme_constant_override("separation", separation)
-	add_child(column)
-	var column_width := 0.0
-	var column_height := 0.0
+	# Right-edge command controls (move / abilities / control). They sit at
+	# fixed screen fractions rather than in a centered stack, so the thumb
+	# finds each in the same place on any window size; with three controls
+	# that lands them on 25% / 50% / 75% of the height.
+	var right_controls: Array[Control] = []
 	for def in catalog.side_buttons:
 		var btn := RadialButton.new()
 		btn.setup(catalog, def)
 		btn.command_chosen.connect(_on_command_chosen)
-		column.add_child(btn)
+		add_child(btn)
 		buttons.append(btn)
-		column_width = maxf(column_width, btn.custom_minimum_size.x)
-		column_height += btn.custom_minimum_size.y
-	if designations != null:
-		designation_button = DesignationButton.new()
-		designation_button.setup(designations)
-		column.add_child(designation_button)
-		column_width = maxf(column_width, designation_button.custom_minimum_size.x)
-		column_height += designation_button.custom_minimum_size.y + separation
-	column_height += separation * maxi(0, buttons.size() - 1)
-	# Pin to the right edge, vertically centered, regardless of window size.
-	column.anchor_left = 1.0
-	column.anchor_right = 1.0
-	column.anchor_top = 0.5
-	column.anchor_bottom = 0.5
-	column.offset_right = -16.0
-	column.offset_left = -16.0 - column_width
-	column.offset_top = -column_height / 2.0
-	column.offset_bottom = column_height / 2.0
-
-	reselect = ReselectButton.new()
-	reselect.setup(catalog)
-	var rs := reselect.custom_minimum_size
-	reselect.anchor_left = 0.0
-	reselect.anchor_right = 0.0
-	reselect.anchor_top = 1.0
-	reselect.anchor_bottom = 1.0
-	reselect.offset_left = 16.0
-	reselect.offset_right = 16.0 + rs.x
-	reselect.offset_top = -16.0 - rs.y
-	reselect.offset_bottom = -16.0
-	add_child(reselect)
+		right_controls.append(btn)
+	# The held control modifier always exists (its mechanics are engine code,
+	# not catalog bindings); it occupies the slot the designation button used to.
+	control_button = ControlButton.new()
+	control_button.setup()
+	add_child(control_button)
+	right_controls.append(control_button)
+	for i in right_controls.size():
+		_pin_right(right_controls[i], float(i + 1) / float(right_controls.size() + 1))
 
 	status_label = Label.new()
 	status_label.set_anchors_preset(Control.PRESET_TOP_LEFT)
@@ -104,6 +81,21 @@ func _ready() -> void:
 		chips.offset_top = 8.0
 		chips.offset_bottom = 8.0 + DesignationChips.CHIP_H
 		add_child(chips)
+
+		# One Locations dropdown, toward the middle/right of the top bar,
+		# replacing per-pin chips.
+		locations_button = LocationsButton.new()
+		locations_button.setup(designations)
+		locations_button.size = locations_button.custom_minimum_size
+		locations_button.anchor_left = 0.66
+		locations_button.anchor_right = 0.66
+		locations_button.anchor_top = 0.0
+		locations_button.anchor_bottom = 0.0
+		locations_button.offset_left = 0.0
+		locations_button.offset_right = locations_button.custom_minimum_size.x
+		locations_button.offset_top = 44.0
+		locations_button.offset_bottom = 44.0 + LocationsButton.HEIGHT
+		add_child(locations_button)
 
 	if ctx != null:
 		_readout = Label.new()
@@ -134,6 +126,13 @@ func take_modifier() -> String:
 	return ""
 
 
+## True while the control modifier is held — the touch-native Ctrl. Gestures
+## consult this to queue orders and add/remove from the selection rather than
+## replace it (design.md "The control button").
+func control_held() -> bool:
+	return control_button != null and control_button.is_pressed_now()
+
+
 ## Highlight the button that owns the armed (awaiting-target) command;
 ## "" clears all highlights. Armed state itself lives in the controller.
 func set_armed(command_id: String) -> void:
@@ -151,18 +150,34 @@ func is_point_on_ui(point: Vector2) -> bool:
 	for btn in buttons:
 		if btn.get_global_rect().has_point(point):
 			return true
-	if designation_button != null \
-			and designation_button.get_global_rect().has_point(point):
+	if control_button != null \
+			and control_button.get_global_rect().has_point(point):
 		return true
-	if chips != null and chips._row != null \
-			and chips._row.get_global_rect().has_point(point):
+	if chips != null and chips.covers_point(point):
+		return true
+	if locations_button != null and locations_button.covers_point(point):
 		return true
 	if point.y >= console.position.y: # console spans the full width
 		return true
 	for c in extra_occluders:
 		if c.visible and c.get_global_rect().has_point(point):
 			return true
-	return reselect.get_global_rect().has_point(point)
+	return false
+
+
+## Pin a control against the right edge, vertically centered on `frac` of
+## the viewport height (0..1).
+func _pin_right(c: Control, frac: float) -> void:
+	var sz := c.custom_minimum_size
+	c.size = sz
+	c.anchor_left = 1.0
+	c.anchor_right = 1.0
+	c.anchor_top = frac
+	c.anchor_bottom = frac
+	c.offset_right = -16.0
+	c.offset_left = -16.0 - sz.x
+	c.offset_top = -sz.y / 2.0
+	c.offset_bottom = sz.y / 2.0
 
 
 func set_status(text: String) -> void:

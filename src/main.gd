@@ -78,6 +78,7 @@ func _ready() -> void:
 	ctx.cancel_placement = func() -> void:
 		viewport_placement.cancel_placement()
 	ctx.status = func(text: String) -> void: hud.set_status(text)
+	ctx.selected_ids = _selected_entity_ids
 
 	hud = Hud.new()
 	hud.catalog = catalog
@@ -112,19 +113,17 @@ func _ready() -> void:
 	add_child(controller)
 
 	hud.command_chosen.connect(controller.choose_command)
-	hud.reselect.reselect_requested.connect(controller.reselect)
-	hud.reselect.auto_deselect_toggled.connect(
-			func(enabled: bool) -> void: controller.auto_deselect = enabled)
+	# Reselect / auto-deselect stay on the controller (dormant) for an easy
+	# future restore; nothing wires them now that the corner button is gone.
 	controller.selection_changed.connect(_on_selection_changed)
 	controller.order_issued.connect(_on_order_issued)
 
 	controller.placement_tap = viewport_placement.handle_tap
 	controller.long_pressed.connect(_on_ground_long_pressed)
-	hud.designation_button.has_selection = func() -> bool:
-		return not controller.selection.is_empty()
-	hud.designation_button.assign_requested.connect(_on_designation_assign)
-	hud.designation_button.recall_requested.connect(_on_designation_recall)
-	hud.chips.chip_tapped.connect(_on_designation_recall)
+	hud.control_button.deselect_all_requested.connect(controller.deselect_all)
+	hud.control_button.new_group_requested.connect(_on_new_group_from_selection)
+	hud.chips.chip_tapped.connect(_on_chip_tapped)
+	hud.locations_button.location_selected.connect(_on_designation_recall)
 
 	var fog := FogOverlay.new()
 	fog.sim = sim
@@ -282,11 +281,31 @@ func _on_ground_long_pressed(world_pos: Vector3) -> void:
 			if slot != -1 else "no free designation slots")
 
 
-func _on_designation_assign(slot: int) -> void:
+## The control button's "New group" petal: snapshot the current selection into
+## a fresh group (empty if nothing is selected — units can be added later).
+func _on_new_group_from_selection() -> void:
 	var ids := _selected_entity_ids()
-	var used := designations.assign_group(ids, slot)
-	hud.set_status("%s = %d units" % [designations.entry(used)["name"], ids.size()]
-			if used != -1 else "no free designation slots")
+	var slot := designations.assign_group(ids, -1, true)
+	if slot == -1:
+		hud.set_status("no free group slots")
+		return
+	hud.set_status("%s = %d units" % [designations.entry(slot)["name"], ids.size()])
+
+
+## Tapping a control-group chip recalls that group; with the control modifier
+## held it instead overwrites the group with the current selection (design.md
+## "The control button").
+func _on_chip_tapped(slot: int) -> void:
+	if not hud.control_held():
+		_on_designation_recall(slot)
+		return
+	var ids := _selected_entity_ids()
+	if ids.is_empty():
+		hud.set_status("select units first to set a group")
+		return
+	var used := designations.set_group(slot, ids)
+	if used != -1:
+		hud.set_status("%s = %d units" % [designations.entry(used)["name"], ids.size()])
 
 
 func _on_designation_recall(slot: int) -> void:
@@ -337,8 +356,14 @@ func _on_order_issued(command_id: String, units: Array[UnitView],
 		_issue_command(SimCommand.Kind.ABILITY, ids, params)
 	else:
 		var kind: SimCommand.Kind = VERB_KIND.get(command_id, SimCommand.Kind.MOVE)
-		_issue_command(kind, ids,
-				{} if kind == SimCommand.Kind.STOP else params)
+		if kind == SimCommand.Kind.STOP:
+			_issue_command(kind, ids, {})
+		else:
+			# Holding the control modifier queues the order (append) instead of
+			# replacing the unit's current orders — see Sim._order_move.
+			if hud.control_held():
+				params["queue"] = true
+			_issue_command(kind, ids, params)
 
 	OrderMarker.spawn(self, world_pos, catalog.command(command_id).color)
 	var target_desc := "" if target == null else " (target: %s/%s)" % [
@@ -372,3 +397,5 @@ func _on_place_confirmed(type_key: int, cx: int, cy: int) -> void:
 	_issue_command(SimCommand.Kind.BUILD, [builder],
 			{"type": type_key, "cx": cx, "cy": cy})
 	hud.set_status("building %s" % ctx.label_of(type_key))
+	# Single-build returns the console to the tab root; continuous re-arms.
+	hud.console.notify_build_committed()

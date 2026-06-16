@@ -93,7 +93,7 @@ The game functions like a computer interface. By default most of it is a viewpor
 - Clicking an enemy will make your units attack, and deselect your units
 - Clicking a resource will make your units mine that resource, and deselect your units
 
-Notice that in all cases, we work in a clean flow where the player selects with their first action, and orders with their second action. We'll have a reselect button in a corner where the player can hit it to grab the last group of selected units, or a long press will disable the auto-deselect feature.
+Notice that in all cases, we work in a clean flow where the player selects with their first action, and orders with their second action. By default the selection is **sticky** — issuing an order does *not* drop it, so the player can fire several orders at the same group in a row. Re-grabbing and editing groups is handled by control groups (top-edge chips, the Organize tab) and the held **control button** (below), not a corner button. *(An auto-deselect-after-order mode and a "reselect last group" action still exist in the code, dormant and unwired, so playtesting can bring either back without a rewrite.)*
 
 Two fingers can be used to pan, zoom, and rotate the map. Rotation is tentative. If we allow rotation, I think we need a three-finger click to reset the rotation to default. We might need the three-finger click for something else, so rotation might be cut due to lack of control options.
 
@@ -104,15 +104,21 @@ The full gesture set, in one place. Anything not listed here doesn't exist until
 | Gesture | Effect |
 |---|---|
 | Tap unit | Select it (replaces selection) |
-| Tap ground / enemy / resource (with selection) | Context order: move / attack / mine, then auto-deselect |
+| Tap ground / enemy / resource (with selection) | Context order: move / attack / mine (selection stays — sticky) |
 | Draw a circle (lasso) | Select all own units inside |
 | Tap empty ground (no selection) | Nothing (prevents misclick orders) |
 | Double-tap own unit | Select all units of that type on screen (tentative) |
+| Hold control button + tap own unit | Add / remove it from the selection |
+| Hold control button + double-tap own unit | Add / remove all of that type on screen |
+| Hold control button + lasso | Add the lassoed units to the selection |
+| Hold control button + give an order | Queue the order instead of replacing |
+| Hold control button + tap a control-group chip | Overwrite that group with the current selection |
+| Swipe the control button up (to its petal) | Drop the current selection into a new group |
+| Swipe the control button down (to its petal) | Deselect all units |
 | Two-finger drag | Pan camera |
 | Two-finger pinch | Zoom |
 | Two-finger twist | Rotate (tentative, see above) |
 | Three-finger tap | Reset rotation to default (tentative / reserved) |
-| Long-press reselect button | Toggle auto-deselect off |
 | Drag console handle (bottom edge) up/down | Slide console between hidden / half / full detents |
 | Flick console handle | Jump one detent in the flick direction |
 
@@ -124,22 +130,27 @@ Along the right side of the screen will be control buttons, like move, patrol, a
 
 Also along the right side of the screen is a second control button that has unit abilities. Default is attack, then the four cardinal directions can be whatever else. The four slots are populated from the current selection; mixed selections show the abilities of the majority type, with a swipe-down-on-button gesture to cycle subgroups (tentative).
 
-This hold-and-swipe radial pattern (tap = default, hold = 4 options on cardinal directions) is our core button idiom. It gives us 5 commands per thumb-position at the cost of one button of screen space, and it's the same muscle motion everywhere: movement button, ability button, designation button.
+This hold-and-swipe radial pattern (tap = default, hold = 4 options on cardinal directions) is our core button idiom. It gives us 5 commands per thumb-position at the cost of one button of screen space, and it's the same muscle motion everywhere: movement button, ability button, control button.
 
 Command grammar is **subject-verb-object**: select units first, then choose the verb from a side button, then tap the object. Verbs that take no object (stop, hold position) execute on the selection the moment they're chosen — select a unit, hit stop, it stops. Choosing a verb with nothing selected does nothing. Changing the selection while a verb is armed drops the verb. (Confirmed in M1 playtesting — the verb-first ordering felt wrong, especially for stop.)
 
-### The designation button
+### The control button
 
-The last button along the right side is the designation button. This is how we handle control groups, points of interest, and named targets — and it's critical because of the way it interfaces with the command console below.
+The last button along the right side is the **control button** — the touch-native equivalent of a desktop Ctrl key, and the hub for control groups and selection editing. It is held with one thumb while the other acts on the viewport or the top-edge chips; while held it *changes what those gestures mean*:
+
+- **Add/remove from the selection.** Tap an own unit to toggle it in or out; lasso to add a whole group; double-tap a unit to toggle every unit of that type on screen. This is how you build and trim a selection without starting over.
+- **Queue orders.** Give a move/attack order while holding control and it appends to the units' order queue instead of replacing it — staged waypoints straight from the viewport.
+- **Set a control group.** Tap a control-group chip while holding control and that group becomes your current selection.
+
+The control button is also a hold-and-swipe radial: hold it to reveal two petals — swipe **up** to drop the current selection into a new group, swipe **down** to **deselect everything**. A plain tap does nothing — a bare press is just the start of a modifier session, and these actions must be deliberate. (This button replaces the earlier corner reselect button.)
 
 A **designation** is a player-created handle on something: a group of units, a map location, or (tentatively) an enemy target. Where a desktop RTS has ctrl+1..9, we have designations, but they're broader — the same system names your control groups, your rally points, your "expansion site Bravo", and your "defend HERE" pin. Designations are what the strategy, tactics, and economy consoles refer to, so the player can say things like "Strike Group A attacks point Bravo" without touching a single unit.
 
-Proposed mechanics (first draft, will iterate in playtesting):
+How designations are made and used:
 
-- Tap designation button (with units selected): assign selection to the next free group slot, with a quick flick to choose a slot instead.
-- Tap designation button (with nothing selected): hold-and-swipe radial of your designations — swipe to one to select that group or jump the camera to that point.
-- Designations appear as labeled chips along the top edge of the screen; tapping a chip selects/centers it. Chips are how the console menus reference them too.
-- Creating a *location* designation: long-press on the ground or minimap, choose "designate" from the popup.
+- **Create a group**: the control button's "New group" petal (swipe up) or the Organize tab's "New control group" button snapshots the current selection — both make an *empty* group when nothing is selected, to fill later. The control-button + chip gesture (above) overwrites an existing group instead.
+- **Recall a group**: control groups appear as labeled chips along the top edge; tap a chip to select that group. Chips are how the console menus reference them too.
+- **Location designations**: long-press the ground or minimap, choose "designate" from the popup; they live behind the top-bar Locations dropdown.
 
 Open question: how many designations before the UI drowns? Starting hypothesis: 8 visible chips, unlimited in the organize menu.
 
@@ -156,7 +167,7 @@ The console tabs (names tentative):
 - **Strategy** — large-scale orders to designated groups: attack the enemy base, retreat and defend, raid along a path, escort. These compile down to standing orders the units' AI executes and maintains (a "defend Bravo" group re-engages threats near Bravo without re-prompting).
 - **Tactics** — adjust your units' AI. Stances (defensive, reckless, skirmish), priorities (focus healing, coordinate fire on one target, kite), and per-type rules within a group — e.g., telling the healer units in Strike Group A to prioritize healing a specific other unit type. Tactics settings persist on the designation, not the individual units, so reinforcements inherit them.
 - **Economy** — reallocate resource mining quickly. For the Hive this is literally sliders (nanomachine allocation per stronghold); for the Rebels it's assigning worker counts per resource and approving auto-replacement of lost workers.
-- **Organize** — modify how your army and map information are structured: delete a designated point of interest, change the location of your home base, swap units between control groups, rename designations.
+- **Organize** — modify how your army and map information are structured: delete a designated point of interest, change the location of your home base, swap units between control groups, rename designations. *(v1 ships the first slice: a "New control group" button that snapshots the current selection — or makes an empty group when nothing is selected — and a roster of every control group with each member's live health. Renaming, deleting, and swapping members between groups come later.)*
 - **World** — loads a larger version of the minimap with information and heatmaps overlaid: where our army is losing or winning battles, where resources are almost drained, recent enemy sightings, area control over time.
 
 The idea is that the player should be able to control individual units if they need to, but there should always be a focus on the macro as well as the micro. It should *feel* like you are the commander of an army. You can give specific commands like sending a specific unit to defend a specific location if that's what you have to do, but you can also just give commands like maximizing mining a specific resource and your units should take care of that. This is what allows us to turn the mobile phone into an effective method of control for an RTS game, so this needs to feel right.
@@ -165,7 +176,7 @@ Console interaction details:
 
 - The console slides to two detents: half-height (viewport still visible and orderable above it) and full-height (for the World tab and complex menus).
 - Console state is preserved per tab — flicking it down and back up returns where you were.
-- **Command queueing lives in the console, not the viewport.** There's no viable gesture for "queue this" inside the viewport's select→order→deselect flow, so viewport orders always replace a unit's current orders. The sim itself supports per-unit order queues; composing them (waypoint routes, build queues, staged attacks) is console UI, arriving with the Strategy tab.
+- **Viewport queueing is the control button; composed queues live in the console.** A bare viewport order replaces a unit's current orders; holding the **control button** while ordering appends instead (the sim supports per-unit order queues — see `Sim._order_move`'s `queue` flag), so a player can stage waypoints by hand. Richer composition — build queues, staged multi-group attacks, escort routes — is still console UI, arriving with the Strategy tab.
 - Anything the console can target (groups, locations) can be expressed through designations, which is why the designation button is load-bearing. A console order that needs a location can resolve it automatically from a designation: "build a factory at home base" picks a valid spot inside the home base designation without the player ever leaving the console.
 - **The popup viewport.** When the player wants precision instead of automation, the same order opens a viewport as a *popup over the console*, already jumped to the relevant designation. The player places the building exactly where they want, the popup closes, and the console comes back where they left it. Crucially, this popup is a separate camera: the real viewport underneath never moves, so swiping the console down afterward returns to exactly what the player was looking at before they opened the console. Both paths — auto-resolve and popup placement — must be equally low-friction; which one fires is the player's choice per order, not a settings toggle.
 

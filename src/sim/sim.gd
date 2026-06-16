@@ -1473,15 +1473,30 @@ func _economy_system() -> void:
 		if player == null:
 			continue
 		var r := _territory_radius(e)
+		var alloc := e.nano_alloc
+		# Repair/build runs first so assist nanos that find no work this tick
+		# fall back to harvesting instead of sitting idle (design intent:
+		# "nothing to repair or build -> back to mining").
+		var assist_used := _assist(e, r, alloc[2])
+		var idle_assist: int = alloc[2] - assist_used
+		var mine_alloy: int = alloc[0]
+		var mine_flux: int = alloc[1]
+		if idle_assist > 0:
+			# Returned nanos follow the alloy:flux split already chosen; with
+			# no resource share expressed they divide evenly.
+			var base: int = alloc[0] + alloc[1]
+			var extra_alloy: int = idle_assist / 2 if base == 0 \
+					else idle_assist * alloc[0] / base
+			mine_alloy += extra_alloy
+			mine_flux += idle_assist - extra_alloy
 		var mined_alloy := _mine(e, player, r, CatalogSchema.ResourceKind.ALLOY,
-				catalog.globals["alloy_rate"], e.nano_alloc[0])
+				catalog.globals["alloy_rate"], mine_alloy)
 		var mined_flux := _mine(e, player, r, CatalogSchema.ResourceKind.FLUX,
-				catalog.globals["flux_rate"], e.nano_alloc[1])
-		var assist_used := _assist(e, r, e.nano_alloc[2])
+				catalog.globals["flux_rate"], mine_flux)
 		income[id] = {
 			"alloy": mined_alloy, "flux": mined_flux,
-			"assist_used": assist_used,
-			"idle": pool - e.nano_alloc[0] - e.nano_alloc[1] - e.nano_alloc[2],
+			"assist_used": assist_used, "idle_assist": idle_assist,
+			"idle": pool - alloc[0] - alloc[1] - alloc[2],
 		}
 
 

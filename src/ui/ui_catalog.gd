@@ -50,7 +50,7 @@ class WidgetDef:
 
 
 const WIDGET_TYPES := ["button", "label", "structure_grid", "unit_grid",
-		"queue_strip", "alloc_sliders", "minimap"]
+		"queue_strip", "alloc_sliders", "minimap", "group_roster"]
 
 
 ## command id -> CommandDef

@@ -10,7 +10,9 @@ const RADIUS := 38.0
 
 var label := "Re"
 var hold_time_threshold := 0.5
-var auto_deselect := true
+## Default to sticky selection — orders don't drop the selection. Players
+## found per-command deselect surprising in playtests; long-press flips it.
+var auto_deselect := false
 
 var _toggled_this_press := false
 

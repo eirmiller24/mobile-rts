@@ -49,7 +49,7 @@ economy/production sim systems, two real console tabs, and the first assets.
 |---|---|---|
 | Rebels, workers, Crew supply | M4 | Per roadmap. (The Rebels' *extended-vision* identity is M4; fog of war itself is in — §4.4.) |
 | Win/loss, bots | M4 | Per roadmap. |
-| Strategy / Tactics / Organize / World tabs | M4+ | Build and Economy are the M3 tabs. Organize gets a minimal stub only if designation playtesting demands it. |
+| Strategy / Tactics / Organize / World tabs | M4+ | Build and Economy are the M3 tabs. *(Post-M3: Organize now hosts the control-group roster — see §6.1's note.)* |
 | Drawn walls | M5 | No wall in the Hive M3 roster. The pathing-cell footprint substrate they need already exists. |
 | Command queueing UI (waypoints, staged orders) | M4 (Strategy tab) | The sim's order queue already supports it (`queue` param); composing queues is console UI per design.md. |
 | Audio | M7 art/sound pass | *Stretch for M3:* 2–3 placeholder order-acknowledgment chirps, because the "feedback without looking" thesis is testable cheaply. |
@@ -740,6 +740,22 @@ M3 scope, per design.md's proposed mechanics:
 This is M1-style engine-layer mechanics work (the radial idiom already
 exists); chip *styling* hooks into the UI catalog like every other widget.
 
+> **Superseded (post-M3 rework).** The designation button's assign/recall
+> radial didn't survive playtesting — four petals capped groups at four and
+> made selection editing impossible. It was replaced by the **control
+> button** (design.md "The control button"): a held modifier that adds/removes
+> from the selection, queues orders, toggles a unit type, and overwrites a group
+> via its chip. Its radial has two petals — swipe up to make a new group from
+> the selection, swipe down to deselect all. Group *creation* also lives on the
+> Organize tab's "New control group" button (`group_roster` widget); both
+> creation paths make an empty group when nothing is selected. Recall stays on
+> the chips, which now read raw touch (so a chip tap registers as the second
+> finger while the control button is held — plain Buttons only see the primary
+> touch under mouse emulation).
+> The corner **reselect button** was removed (its auto-deselect / reselect-last
+> logic kept dormant in `SelectionController`). Sim order queues
+> (`Sim._order_move`'s `queue` flag) back the new viewport queueing.
+
 ### 6.2 Minimap v1
 
 Console-embedded only (the Build flow per design.md; no corner minimap is
@@ -938,9 +954,10 @@ during implementation, none load-bearing:
   skipped).
 - **Long-press designate** (§6.1) acts directly (pin + haptic) instead of
   opening a one-option popup menu.
-- **Designation radial** uses the 4-petal idiom, so flick-assign and
-  radial recall reach slots 1–4; slots 5–8 are reachable via chips.
-  Revisit if playtests want more.
+- **Designation radial** used the 4-petal idiom, so flick-assign and
+  radial recall reached slots 1–4; slots 5–8 were reachable via chips.
+  *Superseded by the control-button rework (see §6.1's note): the radial is
+  gone, group creation moved to the Organize tab, and recall is chip-only.*
 - **Train screen** (§6.5): shortest-queue auto-pick shipped; the
   long-press structure chooser is deferred with the rest of Organize.
 - **Capsule flight** renders as a vertical descent + hover bob over the

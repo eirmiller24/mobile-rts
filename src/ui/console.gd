@@ -11,11 +11,14 @@ extends Control
 
 enum Detent { PEEK, HALF, FULL }
 
-const HANDLE_H := 30.0
+const HANDLE_H := 52.0
 const TABS_H := 48.0
 const HEADER_H := 40.0
-const FLICK_TIME := 0.35
-const FLICK_DISTANCE := 48.0
+## Release velocity (px/s, +down) thresholds: a hard fling carries the
+## sheet all the way to the far detent regardless of where the thumb lifts;
+## a softer flick steps one detent; below that we settle to the nearest.
+const FLING_VELOCITY := 1100.0
+const STEP_VELOCITY := 320.0
 
 var catalog: UICatalog
 ## Game access for live widgets (set by the HUD before add_child); null
@@ -26,6 +29,10 @@ var detent := Detent.PEEK
 ## Structure type armed by the Build flow, awaiting a placement choice
 ## (design_m3.md §6.3 screen 2); -1 when idle.
 var _pending_build := -1
+## Build-flow mode: a plain tap on the Build category does one structure
+## then returns to the tab root; a long-press keeps the placement screen
+## armed for repeated drops until Back. Set when the category is chosen.
+var _continuous_build := false
 
 var _handle: Handle
 var _tab_bar: HBoxContainer
@@ -42,6 +49,10 @@ var _tab_screens: Dictionary = {}
 var _dragging := false
 var _grab_offset := 0.0
 var _drag_start_top := 0.0
+## Smoothed drag velocity (px/s, +down) and the last sample, for momentum.
+var _drag_velocity := 0.0
+var _last_drag_y := 0.0
+var _last_drag_ms := 0
 
 
 func _ready() -> void:
@@ -52,17 +63,12 @@ func _ready() -> void:
 	add_child(_handle)
 
 	_tab_bar = HBoxContainer.new()
-	_tab_bar.add_theme_constant_override("separation", 4)
+	_tab_bar.add_theme_constant_override("separation", 8)
 	add_child(_tab_bar)
-	var group := ButtonGroup.new()
 	for tab in catalog.console_tabs:
-		var btn := Button.new()
-		btn.text = tab.label
-		btn.toggle_mode = true
-		btn.button_group = group
-		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		btn.custom_minimum_size.y = TABS_H - 8.0
-		btn.pressed.connect(_select_tab.bind(tab.id))
+		var btn := CategoryButton.new()
+		btn.setup(tab.id, tab.label)
+		btn.chosen.connect(_on_category_chosen)
 		_tab_bar.add_child(btn)
 		_tab_buttons[tab.id] = btn
 
@@ -89,9 +95,7 @@ func _ready() -> void:
 	_layout()
 	position.y = _detent_top(Detent.PEEK)
 	if not catalog.console_tabs.is_empty():
-		var first := catalog.console_tabs[0]
-		_tab_buttons[first.id].button_pressed = true
-		_select_tab(first.id)
+		_select_tab(catalog.console_tabs[0].id)
 
 
 func _process(delta: float) -> void:
@@ -113,22 +117,40 @@ func begin_drag(pointer_y: float) -> void:
 	_dragging = true
 	_grab_offset = pointer_y - position.y
 	_drag_start_top = position.y
+	_drag_velocity = 0.0
+	_last_drag_y = position.y
+	_last_drag_ms = Time.get_ticks_msec()
 
 
 func drag_to(pointer_y: float) -> void:
 	position.y = clampf(pointer_y - _grab_offset,
 			_detent_top(Detent.FULL), _detent_top(Detent.PEEK))
+	var now := Time.get_ticks_msec()
+	var dt := (now - _last_drag_ms) / 1000.0
+	if dt > 0.0:
+		# Bias toward the most recent sample so a fast lift-off reads as fast.
+		_drag_velocity = lerpf(_drag_velocity, (position.y - _last_drag_y) / dt, 0.5)
+	_last_drag_y = position.y
+	_last_drag_ms = now
 
 
-func end_drag(held_for: float) -> void:
+func end_drag(_held_for: float) -> void:
 	_dragging = false
-	var travelled := position.y - _drag_start_top
-	if held_for < FLICK_TIME and absf(travelled) > FLICK_DISTANCE:
-		# A flick moves one detent in the swipe direction.
-		if travelled < 0.0:
-			detent = Detent.HALF if detent == Detent.PEEK else Detent.FULL
-		else:
-			detent = Detent.HALF if detent == Detent.FULL else Detent.PEEK
+	# A pause before lift-off means no momentum, even if the last motion was
+	# fast: decay the stored velocity toward zero past a short idle window.
+	if Time.get_ticks_msec() - _last_drag_ms > 90:
+		_drag_velocity = 0.0
+	# Momentum decides the landing detent: a hard fling overshoots straight
+	# to the far end even from mid-screen; a flick steps one; a slow release
+	# just settles to whatever is nearest.
+	if _drag_velocity <= -FLING_VELOCITY:
+		detent = Detent.FULL
+	elif _drag_velocity >= FLING_VELOCITY:
+		detent = Detent.PEEK
+	elif _drag_velocity <= -STEP_VELOCITY:
+		detent = Detent.HALF if detent == Detent.PEEK else Detent.FULL
+	elif _drag_velocity >= STEP_VELOCITY:
+		detent = Detent.HALF if detent == Detent.FULL else Detent.PEEK
 	else:
 		detent = _nearest_detent()
 
@@ -174,8 +196,18 @@ func _layout() -> void:
 
 # Tabs and screens.
 
+## A category button was pressed. A long-press arms continuous build; any
+## tab switch first disarms a placement left running on the previous tab.
+func _on_category_chosen(tab_id: String, long: bool) -> void:
+	_disarm_placement()
+	_continuous_build = long
+	_select_tab(tab_id)
+
+
 func _select_tab(tab_id: String) -> void:
 	_current_tab = tab_id
+	for id: String in _tab_buttons:
+		(_tab_buttons[id] as CategoryButton).selected = id == tab_id
 	_show_screen(_tab_screens.get(tab_id, _tab_root(tab_id)))
 
 
@@ -213,6 +245,9 @@ func _build_widget(widget: UICatalog.WidgetDef) -> Control:
 		"alloc_sliders":
 			if ctx != null:
 				return ConsoleWidgets.AllocSliders.new(ctx)
+		"group_roster":
+			if ctx != null:
+				return ConsoleWidgets.GroupRoster.new(ctx)
 		"minimap":
 			if ctx != null:
 				var mini := MinimapView.new()
@@ -241,6 +276,30 @@ func _on_widget_pressed(widget: UICatalog.WidgetDef) -> void:
 
 
 func _on_back() -> void:
+	_disarm_placement()
+	_continuous_build = false
+	_show_screen(_tab_root(_current_tab))
+
+
+## Cancel any build placement currently armed (ghost + confirm bar) and
+## forget the pending type. Safe in structural-only mode (ctx == null).
+func _disarm_placement() -> void:
+	if _pending_build == -1:
+		return
+	_pending_build = -1
+	if ctx != null and ctx.cancel_placement.is_valid():
+		ctx.cancel_placement.call()
+
+
+## Called by the game root once a BUILD command has been issued for a
+## placement. In single-build mode this pops back to the tab root; in
+## continuous mode it re-arms the same structure for another drop.
+func notify_build_committed() -> void:
+	if _continuous_build and _pending_build != -1 and ctx != null \
+			and ctx.arm_placement.is_valid():
+		ctx.arm_placement.call(_pending_build)
+		return
+	_disarm_placement()
 	_show_screen(_tab_root(_current_tab))
 
 
@@ -410,3 +469,69 @@ class Handle:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0.12, 0.14, 0.17, 1.0))
 		var grip := Vector2(56.0, 5.0)
 		draw_rect(Rect2((size - grip) * 0.5, grip), Color(1, 1, 1, 0.45))
+
+
+class CategoryButton:
+	extends TouchButton
+	## Round, pill-shaped category selector (replacing flat tabs): tap to
+	## switch to the category, long-press to flag continuous build. What the
+	## category *is* stays catalog data; this control only renders and reports.
+
+	signal chosen(tab_id: String, long: bool)
+
+	const HEIGHT := 44.0
+	const LONG_TIME := 0.4
+	const FONT_SIZE := 15
+
+	var tab_id := ""
+	var label := ""
+	var selected := false:
+		set(value):
+			selected = value
+			queue_redraw()
+
+	var _long := false
+
+
+	func setup(p_tab_id: String, p_label: String) -> void:
+		tab_id = p_tab_id
+		label = p_label
+		var w := ThemeDB.fallback_font.get_string_size(
+				label, HORIZONTAL_ALIGNMENT_CENTER, -1, FONT_SIZE).x
+		custom_minimum_size = Vector2(maxf(HEIGHT, w + 30.0), HEIGHT)
+
+
+	func _press_started() -> void:
+		_long = false
+
+
+	func _held(time: float) -> void:
+		if not _long and time >= LONG_TIME:
+			_long = true
+			Input.vibrate_handheld(20) # haptic cue that continuous build armed
+
+
+	func _released(_held_for: float) -> void:
+		# Ignore releases dragged off the pill (e.g. a stray swipe).
+		if get_global_rect().has_point(pointer_pos):
+			chosen.emit(tab_id, _long)
+
+
+	func _draw() -> void:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.22, 0.45, 0.62, 0.95) if selected \
+				else Color(0.16, 0.18, 0.22, 0.9)
+		if is_pressed_now():
+			sb.bg_color = sb.bg_color.lightened(0.12)
+		sb.set_corner_radius_all(int(size.y / 2.0))
+		sb.border_width_bottom = 2
+		sb.border_width_top = 2
+		sb.border_width_left = 2
+		sb.border_width_right = 2
+		sb.border_color = Color(1, 1, 1, 0.55 if selected else 0.2)
+		draw_style_box(sb, Rect2(Vector2.ZERO, size))
+		var font := ThemeDB.fallback_font
+		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_CENTER,
+				-1, FONT_SIZE).x
+		draw_string(font, Vector2((size.x - tw) / 2.0, size.y / 2.0 + FONT_SIZE * 0.35),
+				label, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, Color.WHITE)
