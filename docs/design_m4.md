@@ -37,19 +37,27 @@ sim wall (the bot).
    second catalog layer (`data/catalog/rebels.json`). No new sim mechanics
    the schema can't already express, with the exceptions below.
 2. **Worker harvest economy** — the SC/WC gather loop: a worker walks to a
-   resource source, fills its carry, returns to a depot, deposits, repeats.
-   This is the Rebels' economy, the mirror of Hive nanomachines, and the
-   one genuinely new sim system in M4 (§3).
+   resource source (Alloy deposit, raw Flux vent, or a vent-pooling
+   **Refinery**), fills its carry, returns to the HQ depot, deposits, repeats;
+   driven by the Economy tab's **intent dials** rather than per-unit babysit
+   (§3). This is the Rebels' economy, the mirror of Hive nanomachines, and the
+   one genuinely new sim system in M4.
 3. **The worker build mechanic** — `BuildMechanic.WORKER` made real: the
    builder travels to the site and occupies itself constructing, the
-   counterpart to the Hive's order-from-anywhere capsule (§4).
+   counterpart to the Hive's order-from-anywhere capsule (§4) — and its
+   extension, **drawn walls**, where a finger stroke becomes a queue of
+   Barricade segments workers raise in order (§4.4, pulled forward from M5).
 4. **Crew supply** — the second supply pool. Mechanically it is the M3
    supply system already in place; M4 supplies the Rebel data and the
    faction-labeled HUD (§5). Cheap by design — the slot was reserved in M3.
 5. **Rebel vision identity** — three-state fog (unexplored / explored /
-   visible) and last-seen structure memory, plus **capsule detection** (the
-   Watcher's anti-capsule warning). Information warfare is the Rebel
-   pillar; this is what makes it real (§6).
+   visible) and last-seen structure memory, **capsule detection** (the
+   Watcher's anti-capsule warning), **knowledge-gated order resolution**
+   (orders act on what you see/remember, not on fog ground truth — fixing an
+   M3 leak, §6.4), and **walls that block ground vision** (Barricades stand
+   tall and occlude line of sight — the seed of the height-based high-ground
+   LOS; flyers see over them, §6.5). Information warfare is the Rebel pillar;
+   this is what makes it real (§6).
 6. **Win/loss and the match loop** — a data-driven elimination condition,
    match-over detection, and a Quick Match flow: pick factions, spawn two
    players on a 1v1 map, play to a victory/defeat result screen (§7).
@@ -88,11 +96,13 @@ M4 is done when, on a phone:
 1. A Quick Match starts on a 1v1 map: a human Hive (or Rebel) player and a
    bot opponent of the other faction, each with a start base and nothing
    borrowed from the other's rules.
-2. **Rebels play the Rebel way:** workers harvest Alloy by hand into the
-   HQ and Flux through a refinery; the Economy tab assigns worker counts
-   per resource and auto-replaces losses; structures are raised by a worker
-   that walks to the site; Crew caps the army; vision is extended around
-   units and structures.
+2. **Rebels play the Rebel way:** workers harvest Alloy by hand into the HQ,
+   take Flux slowly by mining a vent directly or fast through a vent-pooling
+   Refinery; the Economy tab's intent dials (worker target, alloy/flux and
+   build/mine ratios, auto-repair) keep the fleet on task and auto-replace
+   losses; structures are raised by a worker that walks to the site, and a
+   drawn stroke raises a Barricade wall segment by segment; Crew caps the
+   army; vision is extended around units and structures.
 3. **The Hive still plays the Hive way** — every M3 behavior intact, proven
    by the M3 tests still passing.
 4. A Rebel Demolisher kills a Hive capsule/nest under construction
@@ -149,9 +159,9 @@ Alloy/Flux, times in seconds, supply is Crew.
 
 | Entry | Cost | Time | Crew | Role |
 |---|---|---|---|---|
-| **Headquarters** | 450/0 | 50 | +0 (provides Crew? no — see Housing) | Main structure. Trains Workers, is a resource **depot** (`is_depot`), basic attack. ~1600 hp. Provides starting Crew via its own `bandwidth_provided` so a fresh base can build one unit. |
+| **Headquarters** | 450/0 | 50 | +10 (provides) | Main structure. Trains Workers, is the resource **depot** (`is_depot`) for **both Alloy and Flux**, basic attack. ~1600 hp. Authors a healthy starting Crew (`bandwidth_provided ~10`, placeholder) so a fresh base can field an opening force — a handful of workers and a unit or two — before the first Housing goes up. |
 | **Housing** | 100/0 | 18 | +10 (provides) | Crew-supply structure (the Rebel "depot/relay" of supply). No attack, no nanos. ~350 hp. |
-| **Refinery** | 150/0 | 22 | 0 | Built on a Flux vent (`builds_on_vent`); workers harvest Flux *through* it (§3). Also an `is_depot` for Flux. ~450 hp. |
+| **Refinery** | 150/0 | 22 | 0 | **Standalone** Flux processor: auto-links every Flux vent within `refinery_radius` and lets workers harvest refined Flux from it at the full rate (§3). A *source, not a depot* — refined Flux is hauled to the HQ. ~450 hp. |
 | **Worker** | 50/0 | 14 | 1 | Harvests Alloy/Flux, **builds structures** (`build`, mechanic `worker`), repairs. `carry_capacity`, `harvest_rate`. ~60 hp, weak claw. |
 | **Gunner** | 75/0 | 12 | 2 | Starting infantry; solid all-rounder. **Bonus vs unfinished structures** (§4.3). ~110 hp, shock. |
 | **Watcher** | 60/0 | 14 | 1 | Cheap sensor; long `sight`, **`detects_capsules`** (§6.3). Fragile, light. Effectively a mobile early-warning. ~70 hp. |
@@ -161,8 +171,14 @@ Alloy/Flux, times in seconds, supply is Crew.
 Sight placeholders (tiles, Rebels see further than Hive per identity): HQ
 16, Housing 8, Refinery 7, Worker 8, Gunner 9, Watcher 16 (+capsule
 detection), Demolisher 8, Marauder 11. Air targeting (`hits_air`): Gunner,
-Watcher, Demolisher, Marauder all true (Rebels are the anti-air/anti-capsule
-faction); Worker false.
+Watcher, and Demolisher true — the Rebel answer to capsules is to arm the
+crews that hunt construction so they can also swat a capsule out of the air,
+the **Demolisher** above all (the dedicated capsule-killer). The **Marauder
+bike is ground-only** (`hits_air: false`), and so is the Worker: the bike is
+a fast ground harasser for relays and outlying nests, not an interceptor. So
+"anti-air" is a deliberate **per-unit data fact**, not a blanket faction
+trait — a Rebel commander who *knows* the Hive ships bases as capsules equips
+the right units for it, and the catalog lets the roster say exactly that.
 
 The **Broker** stays a design sketch (deferred, §1). The Rebels do **not**
 have the feral-structure penalty (no `damage_taken: "1.5"` base, no
@@ -192,10 +208,11 @@ A worker (a unit with `carry_capacity > 0`) runs a small state machine,
 stored as hashed entity fields. `harvest_state` ∈
 `IDLE → TO_SOURCE → HARVESTING → TO_DEPOT → DEPOSITING → (back to TO_SOURCE)`:
 
-- **TO_SOURCE** — the worker paths to its assigned source (an alloy deposit,
-  or a COMPLETE refinery for flux) using a **surround slot** on the source's
-  perimeter (the existing `_surround_slots` ring assignment, reused — so a
-  crowd of workers spreads around a patch instead of piling on one cell).
+- **TO_SOURCE** — the worker paths to its assigned source — an **Alloy
+  deposit**, a **Flux vent** (direct mining, slow), or a **COMPLETE Refinery**
+  (refined Flux, fast) — using a **surround slot** on the source's perimeter
+  (the existing `_surround_slots` ring assignment, reused — so a crowd of
+  workers spreads around a source instead of piling on one cell).
 - **HARVESTING** — within reach of the source, the worker accrues
   `carry` at `harvest_rate` (fixed, units/sec) up to `carry_capacity`,
   decrementing the source node's `amount` (capped by the node's
@@ -203,9 +220,9 @@ stored as hashed entity fields. `harvest_state` ∈
   id — the same cap discipline Hive mining already uses). A worker mining a
   depleted node (`amount == 0`) goes IDLE.
 - **TO_DEPOT** — full (or source-empty with carry), the worker paths to the
-  **nearest COMPLETE `is_depot` structure of its own player** (HQ for
-  alloy; refinery or HQ for flux), nearest by path-agnostic distance,
-  ties by lowest id (deterministic).
+  **nearest COMPLETE `is_depot` structure of its own player** — in M4 that is
+  the **HQ**, the only depot, taking both Alloy and refined Flux — nearest by
+  path-agnostic distance, ties by lowest id (deterministic).
 - **DEPOSITING** — at the depot, `carry` transfers to the player's
   resource balance (fixed, accrues exactly; UI floors it), then the worker
   returns to TO_SOURCE for the same source.
@@ -215,51 +232,125 @@ when re-tasked to flux drops nothing (carry is fungible on deposit — it
 deposits what it holds, then switches). Worker death mid-carry loses the
 carried amount (it was never banked) — harassing a worker line is real.
 
-**Flux through a refinery.** Unlike the Hive Siphon (which extracts flux
-passively into the nano economy), a Rebel **Refinery** is a *harvest source
-and a depot*: a worker assigned to flux paths into the refinery, fills from
-the linked vent (`vent_id`, the M3 Siphon mechanism reused), and deposits
-at the nearest depot. A refinery with no linked vent flux left stands inert.
+**Two ways to get Flux.** Unlike the Hive (which *must* build a Siphon on
+each vent to extract Flux into its nano pool), the Rebels can take Flux two
+ways, a free floor and a paid boost:
 
-### 3.2 The Economy tab as worker assignment (macro layer)
+- **Direct vent mining (free, slow, light loads).** A worker `MINE`-ordered
+  onto a Flux vent harvests it directly — no structure required — accruing
+  `carry` at the slow `raw_flux_rate` (a global fraction of `harvest_rate`)
+  and only up to `raw_flux_carry` (a global cap *below* the worker's full
+  `carry_capacity`), capped by the vent's `throughput`, drawing down its
+  `amount`, then hauling to the HQ. This is the Rebel Flux floor: they are
+  never *locked out* of Flux the way a Hive denied its Siphon is, but
+  hand-mining raw vents is slow and the loads are small.
+- **The Refinery (fast, pooled, full loads).** A standalone **Refinery**
+  built near a Flux cluster **auto-links every Flux vent whose center is
+  within `refinery_radius`** of it (resolved once at COMPLETE into a hashed
+  `linked_vents` id list, ascending vent id; vents don't move). It holds **no
+  stored Flux** in M4 — a worker accessing the Refinery draws *live* from the
+  linked vents, the Refinery just being a faster, higher-capacity tap onto
+  them. So a worker assigned to Flux harvests *at the Refinery* at the full
+  `harvest_rate` **and fills to its full `carry_capacity`** (vs the throttled
+  rate and small `raw_flux_carry` of a raw vent), and the Refinery draws the
+  extracted amount down across its linked vents (ascending id, each capped by
+  its own `throughput`, the pooled cap shared across all workers on the
+  Refinery in ascending worker id — the same discipline as a shared node).
+  Two levers make it worth the haul: **higher extraction rate and bigger
+  loads per trip**, so the round trip to the HQ amortizes over far more Flux.
+  One Refinery concentrates a whole vent cluster into a single source and
+  **costs one building for the cluster** where the Hive pays a Siphon per
+  vent. A Refinery whose every linked vent is depleted stands inert.
+  (Letting it *buffer* Flux — so workers top up instantly and expansion
+  caching matters — is a clean later addition, §18; M4 keeps it a pass-through.)
+
+The Refinery is a **source, not a depot** (M4 decision): refined Flux still
+rides a worker back to the HQ, so a Refinery placed out among distant vents
+trades a longer haul for its extraction boost — a real placement decision,
+and the reason to keep building HQs/forward bases as you expand. (Whether the
+Refinery should *also* bank Flux as a forward depot is the obvious
+convenience knob; left as a playtest question, §18, to keep the M4 harvest
+loop one-depot-simple.)
+
+### 3.2 The Economy tab as worker intent (macro layer)
 
 design.md: for the Rebels the Economy tab is "assigning worker counts per
-resource and approving auto-replacement of lost workers." This is the Rebel
-analog of the Hive's nano sliders — and, like nano allocation, it is
-**sim-side** so that auto-replacement happens identically on every lockstep
-peer.
+resource and approving auto-replacement of lost workers." M4 refines that
+into a small set of **intent dials** the player sets and the sim
+continuously approximates — the Rebel analog of the Hive's nano sliders, and,
+like nano allocation, **sim-side** so the approximation runs identically on
+every lockstep peer. The player sets a target *distribution*, not a roster;
+"whatever is the closest approximation of what you asked for" is the sim's
+job, every tick.
 
-- Per player, a **worker-assignment table**: `source node id → desired
-  worker count`, plus a per-player `auto_replace` flag. Set by a new
-  `ASSIGN_WORKERS` command (§11) from the Economy tab.
-- Each economy tick (ascending player id, then ascending source id) the sim
-  reconciles: sources below their desired count pull from the player's
-  **idle** workers first, then from **over-assigned** sources (taking the
-  highest-id worker so assignment is stable), assigning the nearest free
-  worker (ties by id). A worker manually MINE-ordered (§11) is pinned to
-  that source and excluded from auto-reconcile until it goes idle or is
-  re-tasked — manual overrides macro, the same contract as everywhere.
-- **Auto-replacement:** if `auto_replace` is on and a player's live+queued
-  worker count is below the sum of desired counts, the sim queues a Worker
-  at the lowest-id HQ with queue headroom, paying Alloy and Crew at queue
-  time (the normal TRAIN reservation, M3 §4.7) — and skips silently when
-  unaffordable or capped. This is the "set it and forget it" macro promise:
-  a raided mineral line refills itself without the player touching it.
+Per player, the Economy tab authors four values (a `SET_ECONOMY` command,
+§12, emitted on slider release):
 
-A worker tapped onto a resource in the viewport issues a plain `MINE`
-command and is pinned; the Economy tab is for the *fleet*, the viewport for
-the *individual* — the same dual-altitude split as Hive nanos vs. a single
-ordered unit.
+- **`worker_target`** (int) — desired total worker headcount. The sim trains
+  toward it and **auto-replaces losses**: whenever live+queued workers fall
+  below the target, the lowest-id HQ with queue headroom queues a Worker,
+  paying Alloy and Crew at queue time (the normal TRAIN reservation, M3
+  §4.7), skipping silently when unaffordable or Crew-capped. This is the "set
+  it and forget it" promise — a raided mineral line refills itself. (No
+  spending guardrail; we trust the dial — §18.)
+- **`alloy_flux_ratio`** (fixed 0..1) — how the *harvesting* pool splits
+  between Alloy and Flux.
+- **`build_mine_ratio`** (fixed 0..1) — how the *whole* pool splits between a
+  **build/repair reserve** and the harvesting pool.
+- **`auto_repair`** (bool) — whether idle build-reserve workers seek the
+  nearest damaged own structure and repair it (§4.2).
+
+Each economy tick (ascending player id) the sim turns the dials into target
+counts and reconciles actual tasks toward them:
+
+1. From the live worker count and `build_mine_ratio`, compute the **build
+   reserve** size; the remainder is the **harvest pool**, split by
+   `alloy_flux_ratio` into desired Alloy and Flux harvester counts (round
+   half-up — deterministic).
+2. Reassign the **nearest free** workers (idle first, then over-supplied
+   categories, taking the highest-id worker so assignment is stable; ties by
+   id) until actual counts match desired — workers flow between Alloy
+   sources, Flux sources (Refineries preferred over raw vents when both are
+   in range, §3.1), and the build reserve. A worker mid-carry finishes its
+   deposit before being reassigned (it never drops banked-but-uncarried
+   resource — §3.1).
+3. The build reserve waits available near base; when a `BUILD` / `REPAIR` /
+   wall order (§4) needs a builder it is drawn from this reserve —
+   **nearest reserve worker first**, then, if the reserve is empty, the
+   nearest harvester (and `build_mine_ratio` ticks up to reflect that the
+   player asked for more building than the dial reserved). **This is the
+   answer to "where does the builder come from": the build/mine dial *is* the
+   pre-committed builder pool, and an explicit order overdraws it gracefully
+   rather than stalling construction.**
+
+**Manual orders adjust the dials, they don't fight them.** Unlike the Hive
+(where a manually-ordered unit is *pinned* out of macro), a Rebel worker has
+no per-unit pin — the dials are the whole truth, so a hand order **feeds back
+into the intent** instead of escaping it:
+
+- Manually `MINE`-ordering workers onto Alloy or Flux nudges
+  `alloy_flux_ratio` toward that resource by the ordered workers' share (and
+  biases node selection toward the tapped node while it lasts).
+- Manually ordering a `BUILD` / `REPAIR` / wall nudges `build_mine_ratio` up
+  enough to cover the builders it consumes.
+
+So the viewport and the tab are the same control at two altitudes: tapping
+individual workers *is* editing the sliders, by hand and locally. (How far a
+one-off manual order should move a dial — and whether the dial relaxes back
+when the task ends — is a feel question for the tuning pass, §18.) Keeping
+the whole thing dial-driven is what lets auto-replace and reconcile stay
+**sim-side and identical on every peer**, while the tab crosses the boundary
+only at human frequency (one `SET_ECONOMY` on slider release).
 
 ### 3.3 Why this stays inside the sim wall
 
 The harvest loop reads and writes entity state every tick (positions,
 carry, source amounts, balances) — it is squarely inside `src/sim/` and
 ports to C++ with everything else (design.md "The GDExtension port"; M3
-§4.12). The assignment reconcile is O(workers) per economy tick, trivial at
+§4.12). The dial reconcile is O(workers) per economy tick, trivial at
 M4 scale, and touches only value state (no retained references), so it
 translates mechanically. The Economy tab crosses the boundary at human
-frequency (one `ASSIGN_WORKERS` on slider release), not per worker.
+frequency (one `SET_ECONOMY` on slider release), not per worker.
 
 
 ## 4. The worker build mechanic
@@ -291,9 +382,20 @@ branch differs:
   immobile at the site, not harvesting, not fighting, contributing
   `build_rate` progress per tick. Pulling the worker off (any new order)
   **pauses** construction; the structure holds at its current progress
-  (GROWING, no auto-progress) until a worker resumes it. Multiple workers
-  on one site stack progress up to a cap (placeholder: 1 — one builder per
-  structure in M4; multi-worker is a tuning lever, not a mechanic, deferred).
+  (GROWING, no auto-progress) until a worker resumes it.
+- **Multiple workers accelerate, for a price (the WC3 model, decided).**
+  Up to `max_builders` (global, placeholder ~3) workers may `BUILDING` one
+  site; each adds `build_rate` progress, so construction finishes faster the
+  more bodies you commit. The *first* builder's progress is free (the
+  structure's cost already paid for it); **each additional builder drains
+  resources while it assists** — `accel_cost_rate` (global, fixed Alloy/sec
+  per extra builder), deducted per tick from the owner and stopping the
+  instant the player can't pay (the extra worker idles at the site,
+  contributing nothing until funds return). So speed is buyable with
+  workers *and* resources together, and a player racing a building up pays
+  for the rush — exactly WC3's repair-to-accelerate. Order within a site is
+  ascending worker id (deterministic); the per-tick drain is one
+  fixed-point subtraction folded into the economy hash like every balance.
 - Cost is taken at **order** time (reserved like TRAIN), refunded if the
   order is cancelled before GROWING begins; once GROWING, cancel destroys
   the structure for a partial refund (placeholder 50%) — the SC convention.
@@ -342,6 +444,61 @@ Placeholder matrix additions (extends the M3 table with the new column):
 (The capsule's *aerial* targeting rule from M3 §4.5 still applies — only
 `hits_air` units reach a flying capsule at all; the construction multiplier
 governs what happens once they can hit it, and on the landed GROWING nest.)
+
+### 4.4 Drawn walls (Rebel barricades)
+
+design.md makes **drawn walls** a touch-native exception to tile-snapped
+construction (a finger stroke rasterized into a chain of pathing-cell
+segments), and the M3 doc deferred them to M5 *only because the Hive has no
+wall*. The Rebels do — barricades around a base are the physical half of the
+Rebel defensive identity (information is the other half, §6) — and walls ride
+the worker-build mechanic this section already builds, so M4 **pulls drawn
+walls forward from M5** rather than inventing a parallel system. This is the
+one roadmap move M4 makes; flagged here and in §18. The pathing-cell footprint
+substrate they need already exists (design.md; M3 §2.5 — footprints are stored
+in pathing cells, nothing assumes tile-sized).
+
+A **Barricade** is an ordinary Rebel `structure` with a **1×1 pathing-cell**
+footprint (the finer grid): own hp, attackable, blocks pathing, **stands ~2
+levels tall so it blocks ground line of sight** (`los_height`, §6.5 — the
+second half of why the Rebels wall up), dies independently — so an attacker
+chews a hole through a wall rather than dropping it whole. It is built by the worker-build mechanic (§4.1)
+like any structure. What is new is **how a line of them is ordered and
+constructed**:
+
+- **The draw gesture (UI).** A "build wall" verb (Build tab) arms a modal
+  stroke; the player drags a line and it rasterizes — integer-grid supercover,
+  the same deterministic LOS primitive pathing already uses — into an
+  **ordered list of segment cells** running from the stroke's start. The UI
+  emits one **`BUILD_WALL`** command carrying that ordered cell list.
+  Pricing-per-cell, min/max stroke length, and how the modal stroke coexists
+  with the lasso gesture are design.md Open Q #10 — flagged, not solved (§18).
+- **The build plan (sim).** `BUILD_WALL` installs a per-player **wall plan**:
+  an ordered queue of pending segment cells. A pending segment is *not yet a
+  structure* — it blocks nothing and costs nothing until work begins on it —
+  so a half-drawn or half-built plan never walls the player in prematurely.
+  The worker-build system pulls segments off the head of the queue in stroke
+  order and assigns build-reserve workers (§3.2): a worker walks to the next
+  pending cell, the segment spawns `GROWING` (`needs_builder`, §4.1) and is
+  **charged then** (per-segment Alloy, at start-of-construction), the worker
+  raises it, then advances to the next pending cell. Multiple workers drain
+  the queue in parallel, each claiming the next unclaimed segment (ascending
+  cell order, ascending worker id — deterministic).
+- **Cancel leaves the built portion.** Cancelling the wall (`CANCEL` on the
+  plan) clears the *remaining* queue; segments already built or `GROWING`
+  persist as the independent structures they are, and nothing pending was
+  ever charged — so a stroke cancelled halfway leaves exactly the wall you
+  paid for, with no refund math. To turn a corner, draw a **new** `BUILD_WALL`
+  stroke starting where the last ended; two strokes make an L. This is
+  precisely the "draw, cancel, redraw in a new direction" loop design.md's
+  commander wants.
+
+The wall plan is hashed per-player state (the pending-cell queue + which
+segments are claimed), folded into `state_hash()` like every order. Walls add
+no new *combat* or *pathing* rule — a Barricade is just a small structure on
+cells the footprint substrate already addresses — only the **segment-queue
+construction order** is new, and it lives entirely inside the worker-build
+system.
 
 
 ## 5. Crew supply
@@ -427,6 +584,107 @@ the landing instead of discovering the base when it shells them. It is also
 why `detects_capsules` is a data field, not a Watcher special case — a
 custom map can put detection on anything.
 
+### 6.4 Orders into fog and stale targets
+
+Three-state fog and last-seen memory (§6.1–6.2) force a question M4 must
+answer — and surface a bug M3 already has: **what happens when an order is
+contradicted by the time the army arrives and regains vision** (an attack on
+a structure that is gone, a target that fled into fog)? The live M3 wrongness
+behind it: a context order tapped into fog **silently becomes an attack order
+when ground truth has a target there**, even with no player vision — the sim
+leaks the target's existence to anyone who tap-tests the dark. M4 closes the
+leak and defines the arrival behavior on one principle:
+
+**Orders resolve from what the player legitimately knows — current vision
+plus remembered ghosts — never from sim ground truth.**
+
+- **Context-order resolution is knowledge-gated (UI).** The tap-to-order
+  resolver (design.md select-then-order) may pick an *entity* target only from
+  what the ordering player can currently see or remembers as a last-seen ghost
+  (§6.2). A tap on a fogged cell with no known entity resolves to a **move**
+  (or attack-move, if that verb is held) to the *location* — never to an
+  attack on a unit the player cannot see. This closes the M3 leak at the
+  source: the resolver consults the player's visible/known set, not the sim's
+  entity list.
+- **Attacks carry a fallback position (sim).** An `ATTACK` (and attack-move)
+  command carries the target's last-known `x,y` alongside the target id. If
+  the target id is already invalid at execution (dead, or a stale ghost that
+  has since moved) or **becomes** invalid mid-approach (the target dies or
+  leaves the unit's `sight`), the order degrades deterministically to
+  **attack-move to the last-known position**: the unit advances there,
+  re-acquires whatever hostile is actually present on arrival (normal
+  attack-move semantics, §9.3), and otherwise holds. No psychic re-targeting,
+  no chasing a vanished unit across the map.
+- **Stale ghosts self-correct.** Order an attack on a last-seen structure
+  ghost and the army marches to that spot; regained vision on arrival either
+  confirms the structure (engage) or clears the ghost (the attack-move finds
+  nothing and the unit holds). The ghost was the player's best information;
+  acting on it and discovering it stale is intended play, not an error — and
+  it is exactly why a vision faction invests in keeping ghosts fresh (§18).
+
+This is mostly a **UI/command-construction** fix (the resolver) plus a
+**small sim addition** (the attack-order fallback position and its
+degrade-to-attack-move rule, folded into existing order handling — no new
+system). It is the information milestone being honest: the Rebels' whole
+pitch is *acting on knowledge*, so the game must never quietly hand them — or
+the Hive — knowledge they did not earn.
+
+### 6.5 Walls as vision blockers — the height-LOS seed (sim)
+
+If information is the Rebel pillar, a wall should deny it, not just deny
+passage. And because this is a 3D world that *will* grow high ground (cliffs,
+ramps), the honest way to make a wall block sight is **not** a bespoke
+"opaque cell" flag — it is the first instance of the **height-based line of
+sight** the terrain system needs anyway. A wall simply **stands one or two
+levels tall** and occludes like any elevation would. M4 ships flat terrain
+(height 0 everywhere), so the only thing with height *is* a wall — but the
+rule is written general, so cliffs and ramps drop into it for free in M5+.
+
+Each structure carries an **`los_height`** (int LOS levels; 0 = transparent,
+the default; Barricades author ~2). Folded into the M3 vision recompute
+(§6.3, every `VISION_PERIOD` ticks):
+
+- **Vision is height-gated line of sight.** A tile is visible to player P
+  only if some sighting source has center-to-center distance ≤ `sight` *and*
+  a clear integer-grid line to it — the deterministic supercover primitive
+  pathing and the wall stroke already use (design.md) — where a crossed cell
+  blocks the line once its `los_height` rises above the sightline's height at
+  that point (standard RTS high-ground occlusion). On flat M4 terrain that
+  reduces to "a wall hides what's directly behind it"; with real elevation
+  later the same test yields "high ground sees over low, low can't see onto
+  high." A source sees up to and including its own wall — only beyond it is
+  shadowed.
+- **Flying entities are exempt — height occludes the ground plane.** Aerial
+  entities (in-flight Hive capsules today; any unit authored `flying` later)
+  are seen *over* walls and high ground: their visibility uses the
+  radius-only test (and capsule detection, §6.3), never the occluded one.
+  This is exactly the asked behavior — **a wall blocks vision of enemy units
+  that aren't flying** — and the Hive's answer to a walled base is the
+  capsule it already flies: walls don't stop what drops from above, so the
+  Rebel wall stays a strong-but-not-absolute defense and the capsule keeps
+  its reason to exist.
+- **Still derived, never hashed.** Occlusion recomputes from authoritative
+  state (wall/terrain heights + sight stats) each vision tick, like the rest
+  of fog (§6.3) — no new hashed field, nothing added to the desync surface,
+  ports with the vision system (§15). Perf: LOS work happens only near cells
+  with `los_height > 0`, so the common open-ground disc stays the cheap M3
+  stamp; a base ringed in wall pays a bounded shadow-cast over its perimeter,
+  on the `VISION_PERIOD` cadence M3 already throttles.
+
+**Attacks across walls (M4: vision-gated; trajectory LOS deferred).**
+Auto-acquisition already follows the firing unit's own sight by the
+`acquire_range ≤ sight` convention (M3 §4.4), so a unit doesn't auto-target
+through a wall it can't see past — for free. But **when the player has vision
+of a target by other means (a spotter, a flyer, detection), M4 lets the unit
+attack it across the wall** (decided): attacks are gated by *vision*, not by a
+separate line-of-fire test. The richer model we want eventually — a weapon
+**`trajectory`** of `direct` (a gunner's straight line, stopped by the wall)
+vs `lobbed` (an archer's/mortar's arc, which clears it) — is **designed but
+deferred past M4**: a per-attack direct-LOS check fires constantly and feeds
+back into movement (a blocked unit must reposition for a shot, re-pathing
+often), and that cost is not affordable in GDScript. Revisit once the sim is
+C++ (§15; design.md "The GDExtension port"); §18 tracks it.
+
 
 ## 7. Win/loss and the match loop
 
@@ -434,40 +692,36 @@ M4 is the "first full game loop," so the game needs to be able to **end**.
 
 ### 7.1 The defeat condition (data-driven)
 
-A player is **eliminated** when they can no longer produce — concretely:
-**no functional or in-progress entity that can build, and no COMPLETE
-structure that can train.** Stated over catalog facts:
+*(Decided for M4: keep it simple — the town-hall rule.)* A player is
+**eliminated** when they hold **no COMPLETE structure flagged `is_main`**
+(§11) — the Stronghold for the Hive, the HQ for the Rebels. Lose your last
+*complete* main structure and you are out, even if a replacement is in
+flight or under construction. This is the classic "lose your town hall, lose
+the game" rule, and it keys on one catalog flag rather than reasoning about
+build/train capability:
 
-- *Can build* — a live unit or COMPLETE structure carrying a `build`
-  ability, **or** a CAPSULE/GROWING structure that will become one (so a
-  player whose only asset is a stronghold capsule still in flight is not
-  prematurely eliminated — it can still land and recover).
-- *Can train* — a COMPLETE structure with a non-empty `trains` list, **or**
-  one in progress that will have one.
+- **Hive:** no complete Stronghold ⇒ eliminated — design.md's "losing the
+  last complete Stronghold is the Hive defeat condition," verbatim.
+- **Rebels:** no complete HQ ⇒ eliminated. (A surviving worker that *could*
+  rebuild does **not** save you under this rule — deliberately simple for
+  M4; if playtests want "fight on with a worker," that's the override
+  below, not a code change.)
 
-This single rule generalizes both factions exactly:
-
-- **Hive:** the Stronghold is the only entity that builds (`capsule_build`)
-  or trains. Lose every Stronghold (and any in-flight stronghold capsule)
-  and the Hive is eliminated — design.md's "losing the last complete
-  Stronghold is the Hive defeat condition," reproduced, not special-cased.
-- **Rebels:** an HQ trains Workers; a Worker builds an HQ. Eliminated only
-  when **no HQ (or HQ-in-progress) and no Worker** remain — a lone worker
-  can rebuild, a lone HQ can re-make a worker, either survives. The classic
-  "no buildings *and* no workers" rule, expressed as build/train capability.
-
-The rule is the **default**; a map manifest can override it (an M5 editor
-seam — "destroy all structures," "kill the hero unit," a timed score).
-M4 ships only the default and the override *hook* (a manifest field read at
-load, unused by M4 maps).
+The rule is the **default**, and per §8.4's philosophy the win/loss
+condition is itself **data** — a map manifest can override it in M5
+("destroy all structures," "kill the hero unit," a timed score). M4 ships
+only this default plus the override *hook* (a manifest field read at load,
+unused by M4 maps), so the M5 editor extends it without touching sim code.
 
 ### 7.2 Match-over and elimination state
 
-- The sim recomputes each player's producible-ness each tick (cheap; it's
-  a scan it already does for other reasons) and **latches** elimination:
-  `eliminated_tick[player]` is hashed state, set once when the condition
-  first holds and never cleared (a player who can't produce won't recover).
-  Latching avoids flicker and gives the view a definite moment.
+- The sim checks each player for a surviving complete `is_main` structure
+  each tick (cheap — a flag test during the structure scan it already runs)
+  and **latches** elimination: `eliminated_tick[player]` is hashed state,
+  set once when the player first holds no complete main structure and never
+  cleared. Latching avoids flicker (and means a main structure that
+  finishes *after* the latch doesn't un-eliminate — losing the town hall is
+  final) and gives the view a definite moment.
 - **Match-over** is derived: when exactly one player (or, later, one team)
   remains un-eliminated, the match is over and that player is the winner.
   M4 is strictly 1v1, so this is "the other player got eliminated." Teams
@@ -554,9 +808,11 @@ is *not* sim code). `BotCommander`:
 A small macro state machine — enough to make a new player work, explicitly
 *not* a strong AI (that's post-M7). Per think pass, in priority order:
 
-- **Economy maintenance:** keep workers/nanos on resources (Rebels: set
-  worker assignments + auto-replace; Hive: keep nanos on alloy/flux),
-  expand to a new resource when the current one saturates or depletes.
+- **Economy maintenance:** keep workers/nanos on resources (Rebels: set the
+  economy dials — `worker_target`, alloy/flux and build/mine ratios — and let
+  auto-replace refill losses; Hive: keep nanos on alloy/flux), expand (a new
+  HQ/Refinery, or a Worker onto a fresh vent) when the current source
+  saturates or depletes.
 - **Tech/supply:** build supply (Housing / Relay) before hitting the cap;
   build the structures needed to unlock the next unit tier when Flux allows.
 - **Army production:** train a placeholder composition up to a target army
@@ -730,18 +986,31 @@ fields stay a compile error).
 
 | Field | Type | Notes |
 |---|---|---|
-| `is_depot` | bool | worker harvest drop-off (§3); HQ + Refinery true |
+| `is_depot` | bool | worker harvest drop-off (§3); **HQ only** in M4 (Alloy + refined Flux). The Refinery is a *source*, not a depot |
+| `is_main` | bool | "town hall" — the default elimination rule keys on it (§7.1); Stronghold + HQ true |
 | `detects_capsules` | bool | as unit (static detectors) |
-| `needs_builder` | bool | *compiled, not authored* — set true when spawned via `mechanic: worker` (§4.1); authors don't write it |
+| `los_height` | int | LOS levels the structure stands (§6.5); 0 = transparent (default), Barricade ~2. Height-gated vision occlusion — the seed of the high-ground LOS system. Aerial entities see over it |
+| `is_refinery` | bool | standalone Flux processor (§3.1): auto-links Flux vents within `refinery_radius` and acts as a high-rate Flux harvest source |
+| `refinery_radius` | fixed | vent auto-link radius for `is_refinery` structures (§3.1); a global default may be authored per-entry to override |
+| `linked_vents` | id list | *compiled, not authored* — the vents an `is_refinery` structure auto-linked at COMPLETE (§3.1); not in source data |
+| `needs_builder` | bool | *compiled, not authored* — set true when spawned via `mechanic: worker` (§4.1), including each drawn-wall Barricade segment (§4.4); authors don't write it |
 
 **`ability`** — no new kind. `mechanic: worker` (already in the
 `BuildMechanic` enum) is now handled; the `build` schema is unchanged.
 
 **`classes`** gains the `construction` armor class and its matrix column
 (§4.3), plus global constants the new systems read: `build_rate` /
-`harvest_rate` / `repair_rate` defaults, `leash_default`,
-`leash_defensive`, `kite_min_distance` (§9.1). All fixed/ticks, authored as
-decimal strings per M3 §2.3.
+`harvest_rate` / `repair_rate` defaults, `raw_flux_rate` and
+`raw_flux_carry` (the slow rate and small load cap of direct vent mining,
+§3.1), `refinery_radius` default (§3.1),
+`max_builders` and `accel_cost_rate` (multi-worker acceleration, §4.1),
+`leash_default`, `leash_defensive`, `kite_min_distance` (§9.1). All
+fixed/ticks/int, authored as decimal strings per M3 §2.3.
+
+The Rebel catalog also adds the **Barricade** structure (§4.4): an ordinary
+`structure` entry with a 1×1 pathing-cell footprint, built by
+`mechanic: worker`. No new field — drawn walls are a *command/UI* mechanic
+(§4.4, §12), not a schema one.
 
 Inheritance, hashing, and the compiled-catalog shape are unchanged — these
 are new fields in the existing tables, folded into the catalog content hash
@@ -754,12 +1023,14 @@ are new fields in the existing tables, folded into the catalog content hash
 
 | Kind | targets | params | Notes |
 |---|---|---|---|
-| `MINE` | `[worker_ids]` | `node` (entity id) | **New.** Manual harvest order; pins the worker to the source (§3.2). The Rebel `context_orders.resource` resolves to this (§13.2). |
-| `ASSIGN_WORKERS` | `[hq_id or player-scope]` | `node` (id), `count` (int), `auto_replace` (bool) | **New.** Economy-tab worker assignment (§3.2). Scoped per player; multiple emitted to set a table. |
+| `MINE` | `[worker_ids]` | `node` (entity id) | **New.** Manual harvest order onto an Alloy deposit, Flux vent (direct, §3.1), or Refinery. No per-unit pin — instead it nudges the player's economy dials toward that task (§3.2). The Rebel `context_orders.resource` resolves to this (§13.2). |
+| `SET_ECONOMY` | `[player-scope]` | `worker_target` (int), `alloy_flux_ratio` (fixed), `build_mine_ratio` (fixed), `auto_repair` (bool) | **New.** The Economy-tab intent dials (§3.2). Scoped per player; one command carries the whole dial set, emitted on slider release. *(Replaces the earlier per-node `ASSIGN_WORKERS` sketch.)* |
 | `SET_TACTIC` | `[unit_ids]` | `stance` (enum int), `flags` (int bitfield) | **Activated** (was declared). §9.2. |
 | `PATROL` | `[unit_ids]` | `x`, `y` (fixed) | **Activated as real patrol** (was MOVE-aliased). §9.3. Endpoint A is the unit's position at execution. |
 | `BUILD` | `[builder_id]` | `type`, `cx`, `cy` (+ existing) | **Extended:** `mechanic: worker` branch (§4) — no capsule, builder travels. M3 capsule path unchanged. |
+| `BUILD_WALL` | `[player-scope]` | `cells` (ordered int list) | **New.** Installs a per-player wall plan from a drawn stroke (§4.4); build-reserve workers raise Barricade segments in stroke order. A `CANCEL` on the plan clears the remaining (unbuilt) queue. |
 | `REPAIR` | `[worker_ids]` | `target` (structure id) | **New (thin):** worker→damaged own structure (§4.2); folds into the build/BUILDING path. |
+| `ATTACK` | `[unit_ids]` | `target` (id), `x`, `y` (fixed) | **Extended:** carries the target's last-known position so a target lost to death or fog degrades to attack-move-to-`x,y` (§6.4). M1/M2 attack semantics otherwise unchanged. |
 
 `params` still carry only ints (ids, cells, fixed, enum ints, bitfields) —
 no strings on the wire (M3 §4.9), so M6 serialization and hashing stay
@@ -793,17 +1064,24 @@ M3 §2.1, realized) overrides:
   data*).
 - **Build/Train grids:** populate from the Rebel catalog automatically
   (already catalog-driven; no UI work beyond the data layer).
-- **Economy tab:** the Rebel economy widget is **worker assignment**, not
-  nano sliders — a `worker_assign` widget (per-resource desired count +
-  auto-replace toggle + live "workers on / income" readout), the Rebel
-  analog of `alloc_sliders`. The tab id is the same ("economy"); the
-  *widget bound to it* is faction data. (Two widgets, one tab slot —
-  precisely the UI-as-data split.)
+- **Economy tab:** the Rebel economy widget is **worker intent dials**, not
+  nano sliders — a `worker_dials` widget (a `worker_target` stepper, an
+  alloy/flux ratio slider, a build/mine ratio slider, an `auto_repair` toggle,
+  plus a live "workers per task / income" readout), the Rebel analog of
+  `alloc_sliders`, emitting `SET_ECONOMY` (§3.2). The tab id is the same
+  ("economy"); the *widget bound to it* is faction data. (Two widgets, one tab
+  slot — precisely the UI-as-data split.)
+- **Build tab — draw-wall verb:** the Rebel Build layer adds a "build wall"
+  verb that arms the modal stroke and emits `BUILD_WALL` (§4.4). The stroke
+  rasterization and the segment-queue construction are engine mechanics; that
+  the Rebels *have* a wall verb (and the Hive does not) is one line of layer
+  data.
 - **Skin:** Rebel colors/theme on the same console, buttons, chips
   (design.md "Faction skins").
 
-The main faction lift: the `worker_assign` widget and the Rebel UI JSON
-layer. Everything else is data the existing widgets already consume.
+The main faction lift: the `worker_dials` widget, the draw-wall stroke
+handling, and the Rebel UI JSON layer. Everything else is data the existing
+widgets already consume.
 
 ### 13.3 Match UI
 
@@ -861,11 +1139,18 @@ ordering: assets parallel to and trailing the systems).
 Consistent with M3 §4.12: **everything new in the sim ports with the rest of
 `src/sim/`, and the bot never ports.** Specifically:
 
-- **Worker economy, worker build, stances, patrol, capsule detection,
-  elimination latching** all read/write entity state per tick inside the
-  wall — they port mechanically (value state, no retained references,
-  ascending-id iteration). The worker assignment reconcile is the only new
-  per-player loop and it's O(workers), trivially translated.
+- **Worker economy, worker build, drawn walls, stances, patrol, capsule
+  detection, height-LOS vision occlusion, elimination latching** all
+  read/write entity state per tick inside the wall — they port mechanically
+  (value state, no retained references, ascending-id iteration). The
+  economy-dial reconcile is the only new per-player loop and it's O(workers),
+  trivially translated; the wall plan is a per-player cell queue drained by
+  the same build path; height-gated occlusion stays *derived* (recomputed
+  each vision tick, never hashed) like all of fog, so it adds nothing to the
+  parity surface — and it's a system the C++ port *wants* early, since
+  per-tile LOS is exactly the kind of inner loop the port exists to speed
+  (the future direct-fire trajectory check, §6.5, is being held for that same
+  reason).
 - **The bot is *already* on the far side of the wall** — it consumes batch
   view reads and produces commands, the boundary-friendly shape the port
   exists to preserve. It is the cleanest possible confirmation that the
@@ -890,21 +1175,43 @@ Per repo convention, one headless script per check in `tests/`:
 
 - `rebel_economy_check.gd` — the harvest loop exact: worker fills to
   capacity at `harvest_rate`, deposits exact amounts at the nearest depot
-  (id tiebreak verified), node `amount` decrements with throughput shared
-  across workers, flux-through-refinery, worker death drops carry (no
-  bank), assignment reconcile pulls idle→under-supplied and auto-replaces a
-  killed worker, manual MINE pins a worker out of reconcile. Golden
-  balances/positions at fixed ticks.
+  (HQ, id tiebreak verified), node `amount` decrements with throughput shared
+  across workers, worker death drops carry (no bank). Flux both ways: direct
+  vent mining accrues at `raw_flux_rate` and draws the vent down; a Refinery
+  auto-links the vents within `refinery_radius` at COMPLETE and harvests at
+  `harvest_rate`, drawing its linked vents down in id order. The **dial
+  reconcile**: `build_mine_ratio`/`alloy_flux_ratio` produce the right
+  per-task counts, the build reserve sources a builder for a BUILD (nearest
+  reserve worker, then a harvester when empty), `worker_target` auto-replaces
+  a killed worker, and a manual `MINE` nudges the dials rather than pinning a
+  unit. Golden balances/positions at fixed ticks.
 - `worker_build_check.gd` — worker travels to site, GROWING freezes when
   the worker is pulled and resumes when returned, cost reserved at order
   and refunded on pre-GROWING cancel, partial refund after, repair heals a
   damaged structure, anti-construction multiplier (Demolisher vs a GROWING
-  nest vs a Gunner vs a Mite — exact damage from the matrix).
-- `victory_check.gd` — the elimination rule both ways: Hive eliminated when
-  the last Stronghold (and any in-flight capsule) dies but **not** while a
-  stronghold capsule is still airborne; Rebel eliminated only with no HQ
-  *and* no Worker; lone-worker and lone-HQ survival; match-over fires with
-  one survivor; elimination latches (hashed) and doesn't un-set.
+  nest vs a Gunner vs a Mite — exact damage from the matrix). **Drawn walls
+  (§4.4):** a `BUILD_WALL` stroke installs an ordered plan; workers raise
+  segments in stroke order (pending segments block/cost nothing until
+  started); parallel workers drain the queue deterministically; a mid-stroke
+  `CANCEL` leaves exactly the built/GROWING segments with nothing pending
+  charged.
+- `fog_orders_check.gd` — orders under fog (§6.4): a context tap on a fogged
+  enemy with no player vision resolves to a move, **not** an auto-attack (the
+  M3 leak fixed); an `ATTACK` whose target dies or leaves `sight` mid-approach
+  degrades to attack-move at the carried last-known `x,y` and re-acquires only
+  what is actually present on arrival; a stale ghost target produces a march
+  that finds nothing and holds. **Wall occlusion (§6.5):** an `los_height`
+  Barricade hides an enemy ground unit directly behind it from a viewer in
+  line, while an aerial capsule over the same wall stays visible and the
+  viewer still sees up to its own wall; and a unit *can* attack a target
+  across the wall when a separate spotter supplies vision (M4 vision-gated
+  rule). Deterministic across the vision recompute cadence.
+- `victory_check.gd` — the town-hall elimination rule (§7.1) both ways:
+  eliminated the tick the last COMPLETE `is_main` structure dies; an
+  in-flight/GROWING replacement does **not** save the player; a main
+  structure that finishes after the latch does **not** un-eliminate;
+  match-over fires with one survivor; elimination latches (hashed) and
+  doesn't un-set.
 - `tactics_check.gd` — stances change behavior deterministically: defensive
   leashes and returns, reckless chases, skirmish kites at min-distance,
   hold_position never moves to acquire, focus_fire concentrates; PATROL
@@ -919,14 +1226,15 @@ Per repo convention, one headless script per check in `tests/`:
   economies, bot stream, played to elimination, vision recompute ticks
   covered) twice from one seed → identical hash streams. The canary for
   "forgot to hash a new field" (carry, stance, anchor, patrol endpoints,
-  needs_builder, eliminated_tick, worker assignment table).
+  needs_builder, eliminated_tick, economy dials, refinery `linked_vents`,
+  wall plan, attack fallback position).
 - `perf_check.gd` — extended: the 150-unit melee now runs with **two**
   running economies (Hive nanos + Rebel worker fleet) to keep the
   measurement honest against the §1 exit criterion and the GDExtension
   tripwire.
 - `ui_catalog_check.gd` — extended: the Rebel UI layer (Crew label, mine
-  context order, `worker_assign` + `stance_picker` widgets) loads and
-  overrides correctly; both faction layers validate.
+  context order, the draw-wall verb, `worker_dials` + `stance_picker`
+  widgets) loads and overrides correctly; both faction layers validate.
 - `catalog_check.gd` — extended: `rebels.json` compiles, the `construction`
   armor column and new unit/structure fields validate, the merged
   three-layer catalog (`core + hive + rebels`) hash is stable (golden).
@@ -943,25 +1251,28 @@ Dependency-driven; each step lands with its tests green:
    extends here.
 2. **Supply as Crew** (§5): Rebel supply data + HUD relabel via the Rebel
    UI layer. (Almost free — proves the layer mechanism early.)
-3. **Worker harvest economy** (§3): harvest state machine, depots, refinery
-   harvest, the assignment reconcile + `ASSIGN_WORKERS`/`MINE`.
-   `rebel_economy_check` green.
+3. **Worker harvest economy** (§3): harvest state machine, HQ depot, direct
+   vent mining + Refinery auto-link/harvest, the dial reconcile +
+   `SET_ECONOMY`/`MINE`. `rebel_economy_check` green.
 4. **Worker build mechanic** (§4): `mechanic: worker` branch, `needs_builder`,
-   travel/BUILDING/pause, repair, anti-construction class. `worker_build_check`
-   green.
+   travel/BUILDING/pause, repair, anti-construction class; then **drawn walls**
+   (§4.4) — `BUILD_WALL`, the wall plan/segment queue, cancel-leaves-partial,
+   riding the same build path. `worker_build_check` green.
 5. **Win/loss** (§7.1–7.2): the elimination rule, latch, `match_result()`.
    `victory_check` green.
 6. **Unit AI v1** (§9): stances, priority flags, `SET_TACTIC`, real PATROL.
    `tactics_check` green. **The sim is feature-complete for M4 here** —
    `determinism_check` extension passes before any bot or match-UI work.
-7. **Capsule detection** (§6.3): the one sim vision addition.
+7. **Vision additions** (§6.3–6.5): capsule detection, wall LOS occlusion
+   (depends on walls from step 4), knowledge-gated context orders, and the
+   attack-order degrade-to-attack-move fallback. `fog_orders_check` green.
 8. **The bot** (§8): `BotCommander`, in-code faction build-order tables and
    difficulty presets (hardcoded — no AI data layer, §8.4). `bot_check` green.
 9. **Match loop + UI** (§7.3, §13.3): match-aware `main.gd`, `dev_clash.json`,
    setup + result screens, second command source wired to the bot.
-10. **Rebel UI layer + Tactics tab** (§13.1–13.2): `worker_assign`,
-    `stance_picker`, Rebel skin, mine context order. `ui_catalog_check`
-    extends.
+10. **Rebel UI layer + Tactics tab** (§13.1–13.2): `worker_dials`,
+    `stance_picker`, the draw-wall verb, Rebel skin, mine context order.
+    `ui_catalog_check` extends.
 11. **View work** (§14): three-state fog, last-seen ghosts, worker visuals,
     detection ping, Rebel primitives.
 12. **Assets** (parallel to 6–11, lands incrementally).
@@ -974,37 +1285,72 @@ Dependency-driven; each step lands with its tests green:
 Tracked here so they don't silently become decisions (answers fold back
 into this doc).
 
-1. **Multi-worker construction** — M4 caps one builder per site (§4.1).
-   Does build-time-shortening-with-more-workers earn its tuning complexity,
-   or stay a flat one-worker rule? Decide from playtest pacing.
-2. **Worker auto-replace funding** — when a raided line auto-replaces
-   workers, does it ever spend the player into an army-starved hole? Cap
-   auto-replace spending, or trust the player to toggle it? (§3.2)
-3. **Elimination grace** — should a player with only an in-flight stronghold
-   capsule be "eliminated-pending" (UI warns) vs fully alive (§7.1)? M4
-   treats them alive; revisit if it feels bad.
-4. **Bot difficulty surface** — how many scalars before "difficulty" is
+1. **Bot difficulty surface** — how many scalars before "difficulty" is
    legible to a player (§8.2)? Starting hypothesis: 3 named tiers backed by
    the scalar bundle.
-5. **Skirmish kite vs collision** — kiting ranged units against the
+2. **Skirmish kite vs collision** — kiting ranged units against the
    deterministic push-out (M3) needs playtest: does it read as kiting or as
    jitter? (§9.1)
-6. **Last-seen ghost staleness** — how long does a last-seen enemy
+3. **Last-seen ghost staleness** — how long does a last-seen enemy
    structure ghost persist before it's stale enough to mislead (§6.2)?
    View-side tuning, but a real UX question for the information faction.
-7. **Bot ownership in MP** — confirmed M6, but the choice (host owns all
+4. **Bot ownership in MP** — confirmed M6, but the choice (host owns all
    bot slots vs distributed) wants an early opinion so M4's command-stream
    shape doesn't paint us into a corner (§8.3).
-8. **Setup-screen scope** — does M4's match setup stay a fixed-map 1v1, or
-   does map choice / 2v2 slots creep in? Held to 1v1 fixed-map unless
-   playtest demands otherwise.
+5. **Multi-worker tuning** — the *mechanic* is decided (WC3
+   accelerate-for-resources, §4.1); `max_builders`, `accel_cost_rate`, and
+   whether the drain is Alloy-only or also Flux are placeholder numbers for
+   the tuning pass, not open design.
+6. **Refinery buffering** — M4 ships the Refinery as a *live pass-through*:
+   it stores nothing, just taps its linked vents faster and at bigger loads
+   (§3.1). Adding a Flux *buffer* later (workers top up instantly, expansion
+   caching becomes a thing) is an explicit, clean future add — decide if/when
+   playtests want the deeper economy. Not blocking.
+7. **Economy-dial manual feedback** — when a hand `MINE`/`BUILD` nudges the
+   dials (§3.2), how *far* does one order move a slider, and does the slider
+   relax back when the task ends or stick? A feel question; the dial model
+   itself is decided.
+8. **Drawn-wall pricing & gesture** — design.md Open Q #10, now live for the
+   Rebels (§4.4): per-cell cost, min/max stroke length, and how the modal
+   build-wall stroke coexists with the lasso. Needs playtest; the
+   construction *mechanic* (segment queue, cancel-leaves-partial) is decided.
+9. **Trajectory line-of-fire (post-M4)** — M4 gates attacks by *vision*
+   only: with vision by any means you may fire across a wall (§6.5, decided).
+   The wanted refinement — `direct` weapons (straight-line, blocked by walls/
+   high ground) vs `lobbed` (arcing, clears them) — is **deferred past M4**:
+   the per-attack direct-LOS check recomputes constantly and feeds back into
+   pathing, too costly in GDScript. Revisit after the C++ port (§15). Not a
+   question of *whether* (we want it), but *when the sim can afford it*.
 
-*Nothing else is currently open. Decisions made in this doc and flagged
-inline: the data-driven elimination rule (§7.1); Crew is the M3 supply
-mechanic relabeled, no new field (§5); three-state fog and last-seen memory
-stay view-side (§6); the Strategy tab's rich orders defer to M7 while their
-sim primitives ship in M4 (§10); the bot is an external command source,
-reproduced in replays via its recorded stream (§8); and the bot is
-hardcoded in M4 — scenario AI becomes M5 triggers, a player-scriptable
-general AI is a deferred future bridge that the command-source seam keeps
-open (§8.4).*
+*Resolved during M4 design (folded into the body):* **multi-worker
+construction** ships — additional builders shorten build time and drain
+resources while they assist, the WC3 model (§4.1); the **Rebel economy is
+intent-dial driven** — `worker_target` (auto-replace, no spending guardrail —
+we trust the dial), alloy/flux and build/mine ratios, auto-repair, with
+manual orders feeding back into the dials rather than pinning units (§3.2);
+the **Refinery is a standalone vent-pooling source** — not built-on-vent, not
+a depot, and a *live pass-through* (no stored Flux in M4) that gives workers a
+faster rate **and** bigger loads than the slow, light direct-vent-mining
+floor (§3.1); the **HQ provides starting Crew (~+10)** so a fresh base has an
+opening force (§2.1); the **Marauder bike is ground-only**, anti-air being a
+per-unit data choice and the Demolisher the dedicated capsule-killer (§2.1);
+**drawn walls are pulled forward from M5** to ride the worker-build mechanic,
+and **walls block ground vision by standing tall** — modeled as the first
+instance of the height-based high-ground LOS (flyers see over them), with
+attacks gated by vision only in M4 and the direct/lobbed line-of-fire check
+deferred past the C++ port (§4.4/§6.5, §18);
+**orders are knowledge-gated** — context taps and attacks act on what the
+player sees/remembers, with attacks degrading to attack-move on a lost
+target, fixing the M3 fog-leak (§6.4); the **elimination rule** is the simple
+town-hall test — no complete `is_main` structure ⇒ eliminated, an in-flight
+replacement does not save you, and the condition is M5-overridable data
+(§7.1); **match setup** stays a fixed-map 1v1 human-vs-bot, no map picker or
+extra slots in M4 (§7.3, §13.3).
+
+*Also decided earlier and flagged inline:* Crew is the M3 supply mechanic
+relabeled, no new field (§5); three-state fog and last-seen memory stay
+view-side (§6); the Strategy tab's rich orders defer to M7 while their sim
+primitives ship in M4 (§10); the bot is an external command source,
+reproduced in replays via its recorded stream (§8); the bot is hardcoded in
+M4 — scenario AI becomes M5 triggers, a player-scriptable general AI is a
+deferred future bridge that the command-source seam keeps open (§8.4).

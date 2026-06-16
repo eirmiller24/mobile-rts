@@ -2,7 +2,8 @@
 
 Mobile RTS (StarCraft/WC3 style) in Godot 4.6 with GDScript. Two pillars:
 touch-native commander controls and a WC3-style world editor. Full design:
-[design.md](design.md) — read the "Technical Foundations" section before
+[design.md](design.md) — always read the design doc before doing any work, 
+and make sure to definitely read the "Technical Foundations" section before 
 touching sim code.
 
 ## Environment
