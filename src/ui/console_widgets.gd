@@ -388,3 +388,176 @@ class GroupRoster:
 
 	func _selection() -> Array[int]:
 		return ctx.selected_ids.call() if ctx.selected_ids.is_valid() else [] as Array[int]
+
+
+## The Rebel Economy tab (design_m4.md §13.2): worker intent dials — a
+## worker_target stepper, an alloy/flux ratio slider, a build/mine ratio
+## slider, and an auto_repair toggle — emitting one SET_ECONOMY on release.
+## The Rebel analog of AllocSliders; same tab id, faction-chosen widget.
+class WorkerDials:
+	extends VBoxContainer
+	var ctx: GameUIContext
+	var _target := 0
+	var _flux := HSlider.new()
+	var _build := HSlider.new()
+	var _auto := CheckButton.new()
+	var _target_label := Label.new()
+	var _info := Label.new()
+	var _accum := 999.0
+	var _dragging := false
+
+	func _init(p_ctx: GameUIContext) -> void:
+		ctx = p_ctx
+		add_theme_constant_override("separation", 12)
+		var p: SimPlayer = ctx.sim.players.get(ctx.local_player)
+		_target = p.worker_target if p != null else 0
+		# Worker target stepper.
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		add_child(row)
+		var minus := Button.new()
+		minus.text = "−"
+		minus.custom_minimum_size = Vector2(48, 44)
+		minus.pressed.connect(func() -> void: _bump(-1))
+		row.add_child(minus)
+		_target_label.custom_minimum_size.x = 160
+		row.add_child(_target_label)
+		var plus := Button.new()
+		plus.text = "+"
+		plus.custom_minimum_size = Vector2(48, 44)
+		plus.pressed.connect(func() -> void: _bump(1))
+		row.add_child(plus)
+		add_child(_make_slider("Alloy ◂▸ Flux", _flux))
+		add_child(_make_slider("Mine ◂▸ Build", _build))
+		_auto.text = "Auto-repair"
+		_auto.toggled.connect(func(_on: bool) -> void: _emit())
+		add_child(_auto)
+		_info.modulate = Color(1, 1, 1, 0.65)
+		_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		add_child(_info)
+		_sync_from_sim()
+
+	func _make_slider(caption: String, slider: HSlider) -> HBoxContainer:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		var cap := Label.new()
+		cap.text = caption
+		cap.custom_minimum_size.x = 120
+		row.add_child(cap)
+		slider.min_value = 0
+		slider.max_value = 100
+		slider.step = 1
+		slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slider.custom_minimum_size = Vector2(200, 44)
+		slider.drag_started.connect(func() -> void: _dragging = true)
+		slider.drag_ended.connect(func(_c: bool) -> void:
+			_dragging = false
+			_emit())
+		row.add_child(slider)
+		return row
+
+	func _process(delta: float) -> void:
+		if not is_visible_in_tree() or _dragging:
+			return
+		_accum += delta
+		if _accum < REFRESH:
+			return
+		_accum = 0.0
+		_sync_from_sim()
+
+	func _sync_from_sim() -> void:
+		var p: SimPlayer = ctx.sim.players.get(ctx.local_player)
+		if p == null:
+			return
+		_target = p.worker_target
+		_target_label.text = "Workers: %d" % _target
+		# Slider value is the share of the right-hand label.
+		_flux.set_value_no_signal(roundi((Fixed.ONE - p.alloy_flux_ratio) * 100.0 / Fixed.ONE))
+		_build.set_value_no_signal(roundi(p.build_mine_ratio * 100.0 / Fixed.ONE))
+		_auto.set_pressed_no_signal(p.auto_repair)
+		var workers := 0
+		for id in ctx.sim.entities:
+			var e: SimEntity = ctx.sim.entities[id]
+			if e.player == ctx.local_player and ctx.sim._is_worker(e) and e.hp > 0:
+				workers += 1
+		var res := ctx.sim.resources_of(ctx.local_player)
+		_info.text = "%d workers live   %d alloy / %d flux\nThe sim keeps the fleet on this distribution and auto-replaces losses." \
+				% [workers, res["alloy"], res["flux"]]
+
+	func _bump(d: int) -> void:
+		_target = maxi(0, _target + d)
+		_target_label.text = "Workers: %d" % _target
+		_emit()
+
+	func _emit() -> void:
+		var alloy_flux := Fixed.ONE - int(_flux.value) * Fixed.ONE / 100
+		var build_mine := int(_build.value) * Fixed.ONE / 100
+		ctx.issue.call(SimCommand.Kind.SET_ECONOMY, [] as Array[int], {
+			"worker_target": _target,
+			"alloy_flux_ratio": alloy_flux,
+			"build_mine_ratio": build_mine,
+			"auto_repair": _auto.button_pressed,
+		})
+		_accum = REFRESH
+
+
+## The Tactics tab (design_m4.md §13.1): stance buttons plus focus_fire /
+## hold_position toggles, acting on the current selection, emitting SET_TACTIC.
+class StancePicker:
+	extends VBoxContainer
+	var ctx: GameUIContext
+	const STANCES := [
+		[CatalogSchema.Stance.BALANCED, "Balanced"],
+		[CatalogSchema.Stance.DEFENSIVE, "Defensive"],
+		[CatalogSchema.Stance.RECKLESS, "Reckless"],
+		[CatalogSchema.Stance.SKIRMISH, "Skirmish"],
+	]
+	var _focus := CheckButton.new()
+	var _hold := CheckButton.new()
+
+	func _init(p_ctx: GameUIContext) -> void:
+		ctx = p_ctx
+		add_theme_constant_override("separation", 10)
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 8)
+		grid.add_theme_constant_override("v_separation", 8)
+		add_child(grid)
+		for s in STANCES:
+			var btn := Button.new()
+			btn.text = s[1]
+			btn.custom_minimum_size.y = 52
+			btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			btn.pressed.connect(_set_stance.bind(s[0]))
+			grid.add_child(btn)
+		_focus.text = "Focus fire"
+		_focus.toggled.connect(func(_o: bool) -> void: _emit_flags())
+		add_child(_focus)
+		_hold.text = "Hold position"
+		_hold.toggled.connect(func(_o: bool) -> void: _emit_flags())
+		add_child(_hold)
+		var hint := Label.new()
+		hint.modulate = Color(1, 1, 1, 0.6)
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.text = "Applies to the current selection. Defensive holds an anchor; reckless chases; skirmish kites."
+		add_child(hint)
+
+	func _selection() -> Array[int]:
+		return ctx.selected_ids.call() if ctx.selected_ids.is_valid() else [] as Array[int]
+
+	func _set_stance(stance: int) -> void:
+		var ids := _selection()
+		if ids.is_empty():
+			return
+		ctx.issue.call(SimCommand.Kind.SET_TACTIC, ids, {"stance": stance})
+
+	func _emit_flags() -> void:
+		var ids := _selection()
+		if ids.is_empty():
+			return
+		var flags := 0
+		if _focus.button_pressed:
+			flags |= CatalogSchema.TacticFlag.FOCUS_FIRE
+		if _hold.button_pressed:
+			flags |= CatalogSchema.TacticFlag.HOLD_POSITION
+		ctx.issue.call(SimCommand.Kind.SET_TACTIC, ids, {"flags": flags})

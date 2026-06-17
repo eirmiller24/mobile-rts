@@ -56,6 +56,16 @@ static func load_dict(data: Dictionary, map: MapData = null) -> MapData:
 			"start_flux": int(raw.get("start_flux", 0)),
 		})
 
+	for raw: Variant in data.get("starts", []):
+		if typeof(raw) != TYPE_DICTIONARY:
+			map.errors.append("start entry is not an object")
+			continue
+		map.starts.append({
+			"player": int(raw.get("player", 0)),
+			"cx": int(raw.get("cx", 0)),
+			"cy": int(raw.get("cy", 0)),
+		})
+
 	if map.catalog.ok():
 		for raw: Variant in data.get("objects", []):
 			_normalize_object(raw, map)

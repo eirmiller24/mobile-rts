@@ -73,13 +73,13 @@
 			"strategy": {
 				"title": "Strategy",
 				"widgets": [
-					{ "type": "label", "label": "Standing orders for designated groups land in M4." }
+					{ "type": "label", "label": "Group stances and patrols are in the Tactics tab and viewport; composed standing orders (raid/escort/defend) land in M7." }
 				]
 			},
 			"tactics": {
 				"title": "Tactics",
 				"widgets": [
-					{ "type": "label", "label": "Stances and priorities land with unit AI (M4)." }
+					{ "type": "stance_picker" }
 				]
 			},
 			"economy": {

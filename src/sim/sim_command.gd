@@ -19,6 +19,11 @@ enum Kind {
 	TRAIN,
 	CANCEL,
 	SET_RALLY,
+	## M4 (design_m4.md §12). Appended so existing ordinals are unchanged.
+	MINE,          # [worker_ids] node — manual harvest; nudges economy dials
+	SET_ECONOMY,   # [player-scope] worker_target/ratios/auto_repair dials
+	BUILD_WALL,    # [player-scope] cells — drawn-wall segment queue (§4.4)
+	REPAIR,        # [worker_ids] target — worker repairs own structure
 }
 
 var player_id: int

@@ -52,6 +52,16 @@ const UNIT := {
 	"cost_flux": {"type": "int", "default": 0, "min": 0},
 	"train_time": {"type": "seconds", "default": "1.0"},
 	"abilities": {"type": "id_list", "kind": "ability", "default": []},
+	## M4 worker economy / build (design_m4.md §3, §4, §11).
+	"carry_capacity": {"type": "int", "default": 0, "min": 0},  # >0 => harvester
+	"harvest_rate": {"type": "fixed", "default": "0"},  # units/sec; 0 => global
+	"build_rate": {"type": "fixed", "default": "0"},  # progress/sec; 0 => global
+	"repair_rate": {"type": "fixed", "default": "0"},  # hp/sec; 0 => global
+	"detects_capsules": {"type": "bool", "default": false},  # reveals aerial (§6.3)
+	## Default stance; SET_TACTIC overrides at runtime (§9.1). balanced = M3.
+	"stance": {"type": "enum",
+		"values": ["balanced", "defensive", "reckless", "skirmish"],
+		"default": "balanced"},
 }
 
 const STRUCTURE := {
@@ -86,6 +96,15 @@ const STRUCTURE := {
 	## opens the console.
 	"default_allocation": {"type": "enum",
 		"values": ["idle", "alloy", "flux", "assist"], "default": "alloy"},
+	## M4 (design_m4.md §11). linked_vents and needs_builder are runtime
+	## entity state (compiled at COMPLETE / set at spawn), not authored here.
+	"is_depot": {"type": "bool", "default": false},   # worker harvest drop-off (§3)
+	"is_main": {"type": "bool", "default": false},    # town-hall elimination key (§7.1)
+	"detects_capsules": {"type": "bool", "default": false},  # static detector (§6.3)
+	"los_height": {"type": "int", "default": 0, "min": 0},   # vision occlusion (§6.5)
+	"is_refinery": {"type": "bool", "default": false},  # standalone Flux processor (§3.1)
+	"refinery_radius": {"type": "fixed", "default": "0"},  # vent link radius; 0 => global
+	"is_wall": {"type": "bool", "default": false},  # drawn with the stroke gesture (§4.4)
 }
 
 const RESOURCE := {
@@ -130,7 +149,21 @@ const CLASSES := {
 	"alloy_rate": {"type": "fixed", "default": "0.1"},   # /sec per nano
 	"flux_rate": {"type": "fixed", "default": "0.05"},   # /sec per nano
 	"assist_rate": {"type": "fixed", "default": "0.5"},  # progress ticks/tick per nano
-	"repair_rate": {"type": "fixed", "default": "1.0"},  # hp/sec per nano
+	"repair_rate": {"type": "fixed", "default": "1.0"},  # hp/sec per nano (and worker default)
+	## M4 globals (design_m4.md §11). Defaults used when a unit/structure
+	## doesn't author its own; durations are progress-ticks per real second
+	## (20.0/sec => Fixed.ONE per tick, matching the Hive's 1 tick/tick growth).
+	"harvest_rate": {"type": "fixed", "default": "2.0"},   # worker harvest units/sec
+	"build_rate": {"type": "fixed", "default": "20.0"},    # worker build progress/sec
+	"raw_flux_rate": {"type": "fixed", "default": "0.5"},  # fraction of harvest_rate (direct vent)
+	"raw_flux_carry": {"type": "fixed", "default": "0.4"}, # fraction of carry_capacity (direct vent)
+	"refinery_radius": {"type": "fixed", "default": "8.0"},# vent auto-link radius (§3.1)
+	"max_builders": {"type": "int", "default": 3, "min": 1},   # workers per site (§4.1)
+	"accel_cost_rate": {"type": "fixed", "default": "5.0"},# Alloy/sec per extra builder
+	"wall_cost_alloy": {"type": "int", "default": 5, "min": 0},  # per drawn-wall segment (§4.4)
+	"leash_default": {"type": "fixed", "default": "8.0"},      # balanced acquire leash (§9.1)
+	"leash_defensive": {"type": "fixed", "default": "5.0"},    # defensive anchor leash
+	"kite_min_distance": {"type": "fixed", "default": "3.0"},  # skirmish back-off range
 }
 
 ## Compiled enum value sets the sim references by name (kept here so sim
@@ -140,6 +173,11 @@ enum ResourceKind { ALLOY, FLUX }
 enum BuildMechanic { CAPSULE, WORKER }
 enum Affects { OWN_STRUCTURES }
 enum Allocation { IDLE, ALLOY, FLUX, ASSIST }
+## Unit stance (design_m4.md §9.1); order matches the `stance` enum values
+## list above. BALANCED is the M3 default behavior.
+enum Stance { BALANCED, DEFENSIVE, RECKLESS, SKIRMISH }
+## Priority flags (hashed bitfield, §9.1).
+enum TacticFlag { HOLD_POSITION = 1, FOCUS_FIRE = 2 }
 
 
 static func fields_for(kind: String) -> Dictionary:

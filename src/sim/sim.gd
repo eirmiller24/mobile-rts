@@ -72,6 +72,11 @@ var players: Dictionary = {}
 ## entity_id -> SimEntity
 var entities: Dictionary = {}
 
+## Cached `construction` armor-class index (design_m4.md §4.3): GROWING and
+## CAPSULE structures present it instead of their normal armor, so
+## anti-construction units melt them. -1 if the catalog has no such class.
+var _construction_armor: int = -1
+
 ## Catalog + map content hashes, folded into state_hash() so peers with
 ## mismatched data files desync at tick 0 with an obvious cause.
 var _data_hash: int = 0
@@ -97,12 +102,18 @@ var _aura_sources: Dictionary = {}
 ## PackedByteArray (1 = visible). Derived from hashed state on a fixed
 ## tick cadence, so it is itself deterministic but never hashed.
 var _vision: Dictionary = {}
+## Per-pathing-cell LOS height (design_m4.md §6.5), derived each vision tick.
+## _has_occluders gates the height-LOS test so open ground stays the cheap
+## M3 disc stamp.
+var _occluders := PackedByteArray()
+var _has_occluders: bool = false
 
 
 func _init(seed_value: int, p_catalog: CompiledCatalog, map: MapData) -> void:
 	assert(p_catalog != null and p_catalog.ok(), "sim needs a valid catalog")
 	rng = DRng.new(seed_value)
 	catalog = p_catalog
+	_construction_armor = catalog.armor_classes.find("construction")
 	grid = SimGrid.new(map.tiles_w, map.tiles_h)
 	_data_hash = (catalog.hash_value * 31 + map.hash_value) & 0x7FFFFFFFFFFFFFF
 	for p: Dictionary in map.players:
@@ -141,13 +152,17 @@ func step() -> void:
 	_rebuild_aura_index()
 	_execute_scheduled_commands()
 	_economy_system()
+	_worker_economy_system()
+	_worker_build_system()
 	_production_system()
 	_run_flow_builds()
 	_movement_system()
 	_combat_system()
+	_stance_system()
 	_status_system()
 	_structures_system()
 	_reap()
+	_check_elimination()
 	tick += 1
 	if tick % VISION_PERIOD == 0:
 		_recompute_vision()
@@ -305,8 +320,20 @@ func _execute(cmd: SimCommand) -> void:
 			_execute_cancel(cmd)
 		SimCommand.Kind.SET_RALLY:
 			_execute_set_rally(cmd)
+		SimCommand.Kind.PATROL:
+			_execute_patrol(cmd)
+		SimCommand.Kind.SET_TACTIC:
+			_execute_set_tactic(cmd)
 		SimCommand.Kind.ABILITY:
 			_execute_ability(cmd)
+		SimCommand.Kind.MINE:
+			_execute_mine(cmd)
+		SimCommand.Kind.SET_ECONOMY:
+			_execute_set_economy(cmd)
+		SimCommand.Kind.BUILD_WALL:
+			_execute_build_wall(cmd)
+		SimCommand.Kind.REPAIR:
+			_execute_repair(cmd)
 		SimCommand.Kind.DEBUG_SPAWN:
 			spawn_unit(cmd.player_id,
 					cmd.params.get("x", 0), cmd.params.get("y", 0),
@@ -332,7 +359,8 @@ func _execute_build(cmd: SimCommand) -> void:
 	var type: int = cmd.params.get("type", -1)
 	if type < 0 or type >= catalog.size() or catalog.kind_of(type) != "structure":
 		return
-	if not _build_ability_for(builder, type):
+	var mechanic := _build_mechanic_for(builder, type)
+	if mechanic == -1:
 		return
 	var s := catalog.sim_of(type)
 	var w: int = s["foot_w"]
@@ -340,6 +368,12 @@ func _execute_build(cmd: SimCommand) -> void:
 	var cx: int = cmd.params.get("cx", -1)
 	var cy: int = cmd.params.get("cy", -1)
 	if cx < 0 or cy < 0 or cx + w > grid.width or cy + h > grid.height:
+		return
+
+	# Worker mechanic (design_m4.md §4.1): no capsule, no surcharge, no fog
+	# gamble — the worker walks to ground it can legally reach and place on.
+	if mechanic == CatalogSchema.BuildMechanic.WORKER:
+		_execute_worker_build(cmd.player_id, builder, type, cx, cy, w, h)
 		return
 
 	# Siphon placement: the footprint must exactly cover a free vent
@@ -386,15 +420,49 @@ func _execute_build(cmd: SimCommand) -> void:
 		_spawn_capsule(cmd.player_id, cx, cy, type, vent_id)
 
 
-## The builder's first build ability whose `structures` list sells `type`
-## (design_m3.md §4.5); 0 if it has none.
+## True if the builder carries a build ability whose `structures` list sells
+## `type` (design_m3.md §4.5).
 func _build_ability_for(builder: SimEntity, type: int) -> bool:
+	return _build_mechanic_for(builder, type) != -1
+
+
+## The `mechanic` of the builder's first build ability that sells `type`
+## (CAPSULE or WORKER), or -1 if it carries none.
+func _build_mechanic_for(builder: SimEntity, type: int) -> int:
 	for ak in _abilities_of(builder):
 		var ab := catalog.sim_of(ak)
 		if ab["ability_kind"] == CatalogSchema.AbilityKind.BUILD \
 				and type in ab["structures"]:
-			return true
-	return false
+			return ab["mechanic"]
+	return -1
+
+
+## Worker build (design_m4.md §4.1): validate on visible, free, reachable
+## ground (no fog gamble), reserve the cost, spawn the structure GROWING but
+## frozen (needs_builder) — it blocks its footprint and presents
+## `construction` armor at once — then send the worker to raise it.
+func _execute_worker_build(player_id: int, builder: SimEntity, type: int,
+		cx: int, cy: int, w: int, h: int) -> void:
+	var player: SimPlayer = players.get(player_id)
+	if player == null:
+		return
+	var s := catalog.sim_of(type)
+	# Occupancy + vision: a worker can only be ordered onto ground the player
+	# can see is free (the asymmetry with the Hive's fog gamble).
+	for fy in range(cy, cy + h):
+		for fx in range(cx, cx + w):
+			if grid.is_blocked(fx, fy) or not is_cell_visible(player_id, fx, fy):
+				return
+	if player.alloy < Fixed.from_int(s["cost_alloy"]) \
+			or player.flux < Fixed.from_int(s["cost_flux"]):
+		return
+	player.alloy -= Fixed.from_int(s["cost_alloy"])
+	player.flux -= Fixed.from_int(s["cost_flux"])
+	var site := _spawn_structure_entity(player_id, cx, cy, type, false, 0)
+	site.needs_builder = true
+	builder.build_target = site.id
+	builder.orders.clear()
+	_move_to_entity(builder, site)
 
 
 ## The flux vent whose footprint exactly matches the rect, or 0.
@@ -481,6 +549,15 @@ func _order_move(cmd: SimCommand) -> void:
 	if units.is_empty():
 		return
 	var queued: bool = cmd.params.get("queue", false)
+	# A player-issued order pulls a worker off its current task (harvest/build/
+	# wall, design_m4.md §4.1); internal sim moves (harvest/build travel) don't.
+	if not cmd.params.get("internal", false):
+		for e in units:
+			e.build_target = 0
+			e.wall_target_cell = -1
+			if _is_worker(e):
+				e.harvest_state = SimEntity.HarvestState.IDLE
+				e.assigned_source = 0
 	var small := units.size() <= SMALL_GROUP
 	var tx: int = clampi(cmd.params.get("x", 0),
 			SimGrid.CELL / 2, grid.world_w() - SimGrid.CELL / 2)
@@ -1043,9 +1120,22 @@ func _arrived_neighbor(e: SimEntity, n: SimEntity) -> bool:
 
 
 func _complete_order(e: SimEntity) -> void:
+	# PATROL (design_m4.md §9.3): on reaching an endpoint, swap to the other
+	# and keep going (attack-moving, re-acquiring along each leg) — the order
+	# never pops.
+	var o: Dictionary = e.orders[0]
+	if o.get("patrol", false):
+		if o["x"] == o["bx"] and o["y"] == o["by"]:
+			o["x"] = o["ax"]
+			o["y"] = o["ay"]
+		else:
+			o["x"] = o["bx"]
+			o["y"] = o["by"]
+		_start_order(e)
+		return
 	# Record the destination's group key (not the personal slot cell) so
 	# crowd arrival matches across slot-mates of the same order.
-	e.done_goal_key = e.orders[0].get("group", e.goal_key)
+	e.done_goal_key = o.get("group", e.goal_key)
 	e.orders.pop_front()
 	_start_order(e)
 
@@ -1197,9 +1287,19 @@ func _combat_system() -> void:
 			# design_m3.md §2.6).
 			t.hp -= Fixed.to_int(Fixed.mul(
 					Fixed.mul(Fixed.from_int(dmg),
-							catalog.class_mul(e.attack_class, t.armor_class)),
+							catalog.class_mul(e.attack_class, _eff_armor_class(t))),
 					eff_damage_taken(t)))
 			e.cooldown = e.cooldown_ticks
+
+
+## Effective armor class for damage: a not-yet-COMPLETE structure presents
+## `construction` (design_m4.md §4.3) so anti-construction units melt it;
+## everything else uses its catalog armor class.
+func _eff_armor_class(t: SimEntity) -> int:
+	if _construction_armor != -1 and t.kind == SimEntity.Kind.STRUCTURE \
+			and t.build_state != SimEntity.BuildState.COMPLETE:
+		return _construction_armor
+	return t.armor_class
 
 
 ## Active ATTACK_MOVE target standing in attack range (movement pauses).
@@ -1224,8 +1324,16 @@ func _can_target(e: SimEntity, t: SimEntity) -> bool:
 	return true
 
 
-## Nearest live enemy within acquire range; ties go to the lowest id.
+## Nearest live enemy within acquire range; ties go to the lowest id. Tactics
+## (design_m4.md §9.1) bias it: focus_fire prefers a target a groupmate already
+## engages; defensive won't reach past its anchor leash.
 func _acquire(e: SimEntity) -> SimEntity:
+	if e.tactic_flags & CatalogSchema.TacticFlag.FOCUS_FIRE:
+		var ff := _focus_target(e)
+		if ff != null:
+			return ff
+	var leashed: bool = e.stance == CatalogSchema.Stance.DEFENSIVE and e.anchor_set
+	var leash: int = catalog.globals["leash_defensive"]
 	var best: SimEntity = null
 	var best_d2 := Fixed.mul(e.acquire_range, e.acquire_range)
 	var reach := (e.acquire_range >> BUCKET_SHIFT) + 1
@@ -1233,6 +1341,8 @@ func _acquire(e: SimEntity) -> SimEntity:
 		var n: SimEntity = entities[nid]
 		if n.hp <= 0 or not _can_target(e, n):
 			continue
+		if leashed and not _within_dist(e.anchor_x, e.anchor_y, n.x, n.y, leash):
+			continue  # defensive: ignore threats away from the anchor
 		var dx := n.x - e.x
 		var dy := n.y - e.y
 		var d2 := Fixed.mul(dx, dx) + Fixed.mul(dy, dy)
@@ -1242,6 +1352,24 @@ func _acquire(e: SimEntity) -> SimEntity:
 			best_d2 = d2
 			best = n
 	return best
+
+
+## Lowest-id enemy in acquire range that an allied focus-fire unit already
+## targets — so a focus_fire group concentrates damage (design_m4.md §9.1).
+func _focus_target(e: SimEntity) -> SimEntity:
+	for id in _sorted_ids():
+		var t: SimEntity = entities[id]
+		if t.hp <= 0 or not _can_target(e, t):
+			continue
+		if not _in_range(e, t, e.acquire_range, false):
+			continue
+		for aid in _sorted_ids():
+			var a: SimEntity = entities[aid]
+			if a.id != e.id and a.is_unit() and a.hp > 0 and a.player == e.player \
+					and (a.tactic_flags & CatalogSchema.TacticFlag.FOCUS_FIRE) \
+					and a.target_id == t.id:
+				return t
+	return null
 
 
 ## edge_to_edge adds both radii (attack range); acquire is center-to-center.
@@ -1301,16 +1429,36 @@ func _execute_train(cmd: SimCommand) -> void:
 
 
 func _execute_cancel(cmd: SimCommand) -> void:
+	var player: SimPlayer = players.get(cmd.player_id)
+	if player == null:
+		return
+	# Cancel a drawn-wall plan: clears the remaining (unbuilt) queue; segments
+	# already started persist as the structures they are (design_m4.md §4.4).
+	if cmd.params.get("wall", false):
+		for claimer in player.wall_claims:
+			var cw: SimEntity = entities.get(claimer)
+			if cw != null:
+				cw.wall_target_cell = -1
+		player.wall_cells = PackedInt32Array()
+		player.wall_claims = PackedInt32Array()
+		player.wall_type = -1
+		return
 	if cmd.targets.is_empty():
 		return
 	var e: SimEntity = entities.get(cmd.targets[0])
 	if e == null or e.hp <= 0 or e.player != cmd.player_id:
 		return
+	# Cancel a structure under construction: destroy it for a partial refund
+	# (the SC convention, §4.1). Workers on it free themselves next tick.
+	if e.kind == SimEntity.Kind.STRUCTURE \
+			and e.build_state != SimEntity.BuildState.COMPLETE:
+		var s2 := catalog.sim_of(e.type_key)
+		player.alloy += Fixed.from_int(s2["cost_alloy"]) / 2
+		player.flux += Fixed.from_int(s2["cost_flux"]) / 2
+		e.hp = 0  # reaped (unblocks its footprint) this tick
+		return
 	var index: int = cmd.params.get("index", -1)
 	if index < 0 or index >= e.train_queue.size():
-		return
-	var player: SimPlayer = players.get(cmd.player_id)
-	if player == null:
 		return
 	var s := catalog.sim_of(e.train_queue[index]["type"])
 	player.alloy += Fixed.from_int(s["cost_alloy"])
@@ -1514,6 +1662,151 @@ func _surface(e: SimEntity) -> void:
 			break
 
 
+# --- unit AI: stances, tactics, patrol (design_m4.md §9) ----------------------
+
+
+## A unit is "ranged" for the skirmish/kite rule (design_m4.md §9.1).
+const RANGED_THRESHOLD := Fixed.ONE * 2
+
+
+func _execute_set_tactic(cmd: SimCommand) -> void:
+	var has_stance: bool = cmd.params.has("stance")
+	var stance: int = cmd.params.get("stance", 0)
+	var has_flags: bool = cmd.params.has("flags")
+	var flags: int = cmd.params.get("flags", 0)
+	for e in _own_units(cmd):
+		if has_stance:
+			e.stance = stance
+			# Defensive plants an anchor at the unit's current spot; other
+			# stances don't lean on one (design_m4.md §9.1).
+			if stance == CatalogSchema.Stance.DEFENSIVE:
+				e.anchor_x = e.x
+				e.anchor_y = e.y
+				e.anchor_set = true
+			else:
+				e.anchor_set = false
+		if has_flags:
+			e.tactic_flags = flags
+
+
+## PATROL (design_m4.md §9.3): two endpoints (the unit's position now and the
+## target); the unit attack-moves between them, swapping on arrival.
+func _execute_patrol(cmd: SimCommand) -> void:
+	var units := _own_units(cmd)
+	for e in units:
+		e.build_target = 0
+		e.wall_target_cell = -1
+		var bx: int = clampi(cmd.params.get("x", e.x),
+				SimGrid.CELL / 2, grid.world_w() - SimGrid.CELL / 2)
+		var by: int = clampi(cmd.params.get("y", e.y),
+				SimGrid.CELL / 2, grid.world_h() - SimGrid.CELL / 2)
+		var gcx := clampi(grid.cell_of(bx), 0, grid.width - 1)
+		var gcy := clampi(grid.cell_of(by), 0, grid.height - 1)
+		var order := {
+			"kind": SimCommand.Kind.ATTACK_MOVE,
+			"x": bx, "y": by, "small": true,
+			"group": grid.index(gcx, gcy),
+			"cluster": ARRIVE_DIST + e.radius * 2,
+			"patrol": true, "ax": e.x, "ay": e.y, "bx": bx, "by": by,
+		}
+		e.orders.clear()
+		e.orders.append(order)
+		e.target_id = 0
+		_start_order(e)
+
+
+## Stance behavior for idle combat units (design_m4.md §9.1): reckless chases
+## its acquired target, defensive engages only within leash of its anchor and
+## returns when pulled off, skirmish kites at min range. Balanced (and units
+## under a player order, or busy with economy) keep the M3 behavior. Runs
+## after combat so it reacts to this tick's acquisition.
+func _stance_system() -> void:
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if not e.is_unit() or e.hp <= 0 or e.damage <= 0:
+			continue
+		if e.is_underground() or e.morph_ticks_left > 0:
+			continue
+		if not e.orders.is_empty():
+			continue  # a player order is driving it
+		if e.build_target != 0 or _is_worker(e) \
+				or e.harvest_state != SimEntity.HarvestState.IDLE:
+			continue  # busy with economy
+		if e.tactic_flags & CatalogSchema.TacticFlag.HOLD_POSITION:
+			continue  # planted: fire only at in-range targets
+		var t: SimEntity = entities.get(e.target_id)
+		var has_target := t != null and t.hp > 0 and t.player != e.player
+		match e.stance:
+			CatalogSchema.Stance.RECKLESS:
+				if has_target and not _in_range(e, t, e.attack_range, true):
+					_step_toward(e, t.x, t.y)
+			CatalogSchema.Stance.DEFENSIVE:
+				_stance_defensive(e, t, has_target)
+			CatalogSchema.Stance.SKIRMISH:
+				if has_target and e.attack_range > RANGED_THRESHOLD:
+					var kmin: int = catalog.globals["kite_min_distance"]
+					var dx := t.x - e.x
+					var dy := t.y - e.y
+					if Fixed.mul(dx, dx) + Fixed.mul(dy, dy) < Fixed.mul(kmin, kmin):
+						_step_away(e, t.x, t.y)  # too close: back off, keep firing
+			_:
+				pass  # BALANCED == M3
+
+
+func _stance_defensive(e: SimEntity, t: SimEntity, has_target: bool) -> void:
+	var leash: int = catalog.globals["leash_defensive"]
+	var ax := e.anchor_x if e.anchor_set else e.x
+	var ay := e.anchor_y if e.anchor_set else e.y
+	if has_target and _within_dist(ax, ay, t.x, t.y, leash):
+		if not _in_range(e, t, e.attack_range, true):
+			_step_toward(e, t.x, t.y)  # close on a threat near the anchor
+		return
+	# No engageable threat: walk back to the anchor if pulled off it.
+	if e.anchor_set and not _within_dist(e.x, e.y, ax, ay, ARRIVE_DIST):
+		_step_toward(e, ax, ay)
+
+
+## Direct fixed-point step toward a point (no pathfinding — stances are a thin
+## v1 layer, §9), kept on the map and out of blocked cells.
+func _step_toward(e: SimEntity, tx: int, ty: int) -> void:
+	var dx := tx - e.x
+	var dy := ty - e.y
+	var d := _length(dx, dy)
+	if d == 0:
+		return
+	if d <= e.step:
+		e.x = tx
+		e.y = ty
+	else:
+		e.x += dx * e.step / d
+		e.y += dy * e.step / d
+	e.x = clampi(e.x, e.radius, grid.world_w() - e.radius)
+	e.y = clampi(e.y, e.radius, grid.world_h() - e.radius)
+	_push_out_of_blocked(e)
+
+
+func _step_away(e: SimEntity, tx: int, ty: int) -> void:
+	var dx := e.x - tx
+	var dy := e.y - ty
+	var d := _length(dx, dy)
+	if d == 0:
+		dx = Fixed.ONE
+		d = Fixed.ONE
+	e.x += dx * e.step / d
+	e.y += dy * e.step / d
+	e.x = clampi(e.x, e.radius, grid.world_w() - e.radius)
+	e.y = clampi(e.y, e.radius, grid.world_h() - e.radius)
+	_push_out_of_blocked(e)
+
+
+func _within_dist(ax: int, ay: int, bx: int, by: int, r: int) -> bool:
+	var dx := bx - ax
+	var dy := by - ay
+	if absi(dx) > r or absi(dy) > r:
+		return false
+	return Fixed.mul(dx, dx) + Fixed.mul(dy, dy) <= Fixed.mul(r, r)
+
+
 # --- nanomachine economy (design_m3.md §4.6) ----------------------------------
 
 
@@ -1665,6 +1958,638 @@ func _assist(sh: SimEntity, r: int, nanos: int) -> int:
 	return used
 
 
+# --- worker harvest economy (design_m4.md §3) ---------------------------------
+## The Rebel mirror of nanomachines: a loop of physical bodies. Dials set a
+## target distribution (§3.2); the sim reconciles tasks toward it every tick,
+## sim-side so the approximation is identical on every lockstep peer. All
+## fixed-point, ascending-id, hashed.
+
+
+const HARVEST_REACH := SimGrid.CELL * 2  # extra slack on top of radii (fixed)
+
+
+func _worker_economy_system() -> void:
+	var pids := players.keys()
+	pids.sort()
+	for pid in pids:
+		_reconcile_economy(pid)
+	# Harvest pass: ascending worker id, so per-node throughput sharing is
+	# ascending-id by construction. budget: node id -> remaining fixed/tick.
+	var budget := {}
+	for id in _sorted_ids():
+		var w: SimEntity = entities[id]
+		if not _is_worker(w) or w.hp <= 0 or w.build_target != 0:
+			continue
+		_harvest_tick(w, budget)
+
+
+## Turn a player's dials into target task counts and reconcile assignments
+## (§3.2): build reserve, then the harvest pool split by alloy_flux_ratio.
+## Also auto-replaces losses toward worker_target.
+func _reconcile_economy(pid: int) -> void:
+	var p: SimPlayer = players.get(pid)
+	if p == null:
+		return
+	var workers: Array[int] = []
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.hp > 0 and e.player == pid and _is_worker(e):
+			workers.append(id)
+	# Auto-replace: train toward worker_target counting live + queued (§3.2).
+	if p.worker_target > workers.size() + _queued_workers(pid):
+		_queue_replacement_worker(pid)
+	var n := workers.size()
+	if n == 0:
+		return
+	var reserve := clampi(_scale_count(n, p.build_mine_ratio), 0, n)
+	var pool := n - reserve
+	var desired_alloy := clampi(_scale_count(pool, p.alloy_flux_ratio), 0, pool)
+	var qa := desired_alloy
+	var qf := pool - desired_alloy
+	# Assign by ascending id: lowest ids fill alloy then flux, the rest are
+	# build reserve. Stable while counts hold; surplus sheds from the high
+	# ids (the design's "take the highest-id worker" reduces to this).
+	for wid in workers:
+		var w: SimEntity = entities[wid]
+		if qa > 0:
+			w.harvest_role = 1
+			qa -= 1
+		elif qf > 0:
+			w.harvest_role = 2
+			qf -= 1
+		else:
+			w.harvest_role = 0  # build reserve / idle near base
+
+
+## round_half_up(n * ratio) for a fixed ratio in [0,1].
+func _scale_count(n: int, ratio_fixed: int) -> int:
+	return (n * ratio_fixed + Fixed.HALF) >> Fixed.SHIFT
+
+
+func _is_worker(e: SimEntity) -> bool:
+	return e.is_unit() and catalog.sim_of(e.type_key)["carry_capacity"] > 0
+
+
+func _queued_workers(pid: int) -> int:
+	var count := 0
+	for id in entities:
+		var e: SimEntity = entities[id]
+		if e.player != pid or e.kind != SimEntity.Kind.STRUCTURE:
+			continue
+		for q: Dictionary in e.train_queue:
+			if catalog.sim_of(q["type"])["carry_capacity"] > 0:
+				count += 1
+	return count
+
+
+## A trainable worker unit type for the player (lowest type_key), or -1.
+func _worker_type_for(pid: int) -> int:
+	for type: int in trainable_units(pid):
+		if catalog.sim_of(type)["carry_capacity"] > 0:
+			return type
+	return -1
+
+
+## Queue one replacement worker at the shortest-queue eligible structure;
+## a no-op (silently) if unaffordable or Crew-capped — the normal TRAIN
+## reservation path does the checks.
+func _queue_replacement_worker(pid: int) -> void:
+	var wt := _worker_type_for(pid)
+	if wt < 0:
+		return
+	var st := train_structure_for(pid, wt)
+	if st == 0:
+		return
+	var c := SimCommand.new(pid, SimCommand.Kind.TRAIN)
+	c.targets = [st]
+	c.params = {"type": wt}
+	_execute_train(c)
+
+
+## Advance one worker's harvest state machine (§3.1).
+func _harvest_tick(w: SimEntity, budget: Dictionary) -> void:
+	match w.harvest_state:
+		SimEntity.HarvestState.IDLE:
+			if w.harvest_role == 0:
+				return  # build reserve waits near base (drawn by §4)
+			var src := _pick_source(w, w.harvest_role)
+			if src == 0:
+				return
+			w.assigned_source = src
+			w.harvest_state = SimEntity.HarvestState.TO_SOURCE
+			_move_to_entity(w, entities[src])
+		SimEntity.HarvestState.TO_SOURCE:
+			var src: SimEntity = entities.get(w.assigned_source)
+			if not _valid_source(src):
+				w.assigned_source = 0
+				w.harvest_state = SimEntity.HarvestState.IDLE
+				return
+			# Role changed under us (dials moved) — drop and re-pick.
+			if not _source_matches_role(src, w.harvest_role):
+				w.assigned_source = 0
+				w.harvest_state = SimEntity.HarvestState.IDLE
+				return
+			if _within_reach(w, src):
+				w.harvest_state = SimEntity.HarvestState.HARVESTING
+			elif w.orders.is_empty():
+				_move_to_entity(w, src)  # path dropped/stalled — re-issue
+		SimEntity.HarvestState.HARVESTING:
+			var src: SimEntity = entities.get(w.assigned_source)
+			if not _valid_source(src):
+				w.harvest_state = SimEntity.HarvestState.TO_DEPOT if w.carry > 0 \
+						else SimEntity.HarvestState.IDLE
+				if w.carry <= 0:
+					w.assigned_source = 0
+				return
+			_harvest_draw(w, src, budget)
+			if w.carry >= _carry_cap_for(w, src):
+				w.harvest_state = SimEntity.HarvestState.TO_DEPOT
+		SimEntity.HarvestState.TO_DEPOT:
+			if w.carry <= 0:
+				w.harvest_state = SimEntity.HarvestState.IDLE
+				return
+			var depot := _nearest_depot(w)
+			if depot == 0:
+				return  # nowhere to drop off; hold the carry
+			var d: SimEntity = entities[depot]
+			if _within_reach(w, d):
+				w.harvest_state = SimEntity.HarvestState.DEPOSITING
+			elif w.orders.is_empty():
+				_move_to_entity(w, d)
+		SimEntity.HarvestState.DEPOSITING:
+			var p: SimPlayer = players.get(w.player)
+			if p != null and w.carry_kind != -1:
+				if w.carry_kind == CatalogSchema.ResourceKind.ALLOY:
+					p.alloy += w.carry
+				else:
+					p.flux += w.carry
+			w.carry = 0
+			w.carry_kind = -1
+			w.harvest_state = SimEntity.HarvestState.IDLE  # re-task by role next tick
+
+
+## A harvestable source still worth visiting: a non-empty Alloy deposit, a
+## non-empty raw Flux vent with no siphon on it, or a COMPLETE own Refinery
+## with at least one non-empty linked vent.
+func _valid_source(src: SimEntity) -> bool:
+	if src == null or src.hp <= 0:
+		return false
+	if src.is_resource():
+		if src.amount <= 0:
+			return false
+		if src.resource_kind == CatalogSchema.ResourceKind.FLUX \
+				and _siphon_on(src.id) != 0:
+			return false
+		return true
+	if src.kind == SimEntity.Kind.STRUCTURE \
+			and catalog.sim_of(src.type_key).get("is_refinery", false) \
+			and src.build_state == SimEntity.BuildState.COMPLETE:
+		for vid in src.linked_vents:
+			var v: SimEntity = entities.get(vid)
+			if v != null and v.amount > 0:
+				return true
+	return false
+
+
+## ALLOY=1, FLUX=2, NONE=0 for a candidate source entity.
+func _role_of_source(src: SimEntity) -> int:
+	if src == null:
+		return 0
+	if src.is_resource():
+		if src.resource_kind == CatalogSchema.ResourceKind.ALLOY:
+			return 1
+		if src.resource_kind == CatalogSchema.ResourceKind.FLUX:
+			return 2
+	elif catalog.sim_of(src.type_key).get("is_refinery", false):
+		return 2
+	return 0
+
+
+func _source_matches_role(src: SimEntity, role: int) -> bool:
+	return _role_of_source(src) == role
+
+
+## Nearest valid source for the role (path-agnostic center distance, ties to
+## lowest id). FLUX prefers a Refinery over a raw vent when one is available
+## (§3.1). Returns entity id or 0.
+func _pick_source(w: SimEntity, role: int) -> int:
+	var best := 0
+	var best_d2 := 0x7FFFFFFFFFFFFFF
+	if role == 2:
+		# Prefer refineries: scan them first; only fall back to raw vents if
+		# none has flux available.
+		for id in _sorted_ids():
+			var e: SimEntity = entities[id]
+			if e.kind == SimEntity.Kind.STRUCTURE and e.player == w.player \
+					and catalog.sim_of(e.type_key).get("is_refinery", false) \
+					and _valid_source(e):
+				var d2 := _entity_dist2(w, e)
+				if d2 < best_d2:
+					best_d2 = d2
+					best = id
+		if best != 0:
+			return best
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if not e.is_resource():
+			continue
+		if role == 1 and e.resource_kind != CatalogSchema.ResourceKind.ALLOY:
+			continue
+		if role == 2 and e.resource_kind != CatalogSchema.ResourceKind.FLUX:
+			continue
+		if not _valid_source(e):
+			continue
+		var d2 := _entity_dist2(w, e)
+		if d2 < best_d2:
+			best_d2 = d2
+			best = id
+	return best
+
+
+## Nearest COMPLETE is_depot structure of the worker's player, ties to lowest
+## id (§3.1). 0 if the player has no depot.
+func _nearest_depot(w: SimEntity) -> int:
+	var best := 0
+	var best_d2 := 0x7FFFFFFFFFFFFFF
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind == SimEntity.Kind.STRUCTURE and e.player == w.player \
+				and _functional(e) and catalog.sim_of(e.type_key).get("is_depot", false):
+			var d2 := _entity_dist2(w, e)
+			if d2 < best_d2:
+				best_d2 = d2
+				best = id
+	return best
+
+
+func _entity_dist2(a: SimEntity, b: SimEntity) -> int:
+	var dx := b.x - a.x
+	var dy := b.y - a.y
+	return Fixed.mul(dx, dx) + Fixed.mul(dy, dy)
+
+
+## Within harvesting/deposit reach: center distance <= both radii + slack.
+func _within_reach(w: SimEntity, t: SimEntity) -> bool:
+	var reach := w.radius + t.radius + HARVEST_REACH
+	var dx := t.x - w.x
+	var dy := t.y - w.y
+	if absi(dx) > reach or absi(dy) > reach:
+		return false
+	return Fixed.mul(dx, dx) + Fixed.mul(dy, dy) <= Fixed.mul(reach, reach)
+
+
+## Effective carry cap for this source (fixed): full capacity at a deposit
+## or Refinery; the small raw_flux_carry fraction at a raw Flux vent (§3.1).
+func _carry_cap_for(w: SimEntity, src: SimEntity) -> int:
+	var cap := Fixed.from_int(catalog.sim_of(w.type_key)["carry_capacity"])
+	if _is_raw_vent(src):
+		return Fixed.mul(cap, catalog.globals["raw_flux_carry"])
+	return cap
+
+
+func _is_raw_vent(src: SimEntity) -> bool:
+	return src.is_resource() \
+			and src.resource_kind == CatalogSchema.ResourceKind.FLUX
+
+
+## Per-tick harvest rate (fixed): the unit's harvest_rate (or global default)
+## divided into ticks, throttled to raw_flux_rate at a raw vent (§3.1).
+func _harvest_rate_for(w: SimEntity, src: SimEntity) -> int:
+	var rate: int = catalog.sim_of(w.type_key)["harvest_rate"]
+	if rate <= 0:
+		rate = catalog.globals["harvest_rate"]
+	var per_tick := rate / TICK_RATE
+	if _is_raw_vent(src):
+		per_tick = Fixed.mul(per_tick, catalog.globals["raw_flux_rate"])
+	return per_tick
+
+
+## Accrue carry this tick, drawing the node amount down (capped by the
+## node's per-tick throughput budget, shared ascending-id). A Refinery draws
+## across its linked vents in ascending id.
+func _harvest_draw(w: SimEntity, src: SimEntity, budget: Dictionary) -> void:
+	var remaining_cap := _carry_cap_for(w, src) - w.carry
+	if remaining_cap <= 0:
+		return
+	var demand := mini(_harvest_rate_for(w, src), remaining_cap)
+	if demand <= 0:
+		return
+	var kind: int
+	var drawn := 0
+	if src.is_resource():
+		kind = src.resource_kind
+		drawn = _draw_node(src, demand, budget)
+	else:
+		# Refinery: full rate, pulled live from its linked vents.
+		kind = CatalogSchema.ResourceKind.FLUX
+		for vid in src.linked_vents:
+			if demand <= 0:
+				break
+			var v: SimEntity = entities.get(vid)
+			if v == null or v.amount <= 0:
+				continue
+			var got := _draw_node(v, demand, budget)
+			drawn += got
+			demand -= got
+	if drawn <= 0:
+		return
+	w.carry += drawn
+	if w.carry_kind == -1:
+		w.carry_kind = kind
+
+
+## Draw up to `demand` from one node this tick, respecting its throughput
+## budget and remaining amount. Decrements both; returns the amount drawn.
+func _draw_node(node: SimEntity, demand: int, budget: Dictionary) -> int:
+	var b: int = budget.get(node.id, -1)
+	if b == -1:
+		b = catalog.sim_of(node.type_key)["throughput"] / TICK_RATE
+	var draw := mini(demand, mini(b, node.amount))
+	if draw <= 0:
+		budget[node.id] = b
+		return 0
+	node.amount -= draw
+	budget[node.id] = b - draw
+	return draw
+
+
+## Order a single worker to walk adjacent to a (blocked) source/depot — the
+## move resolves to the nearest free cell, the surround-slot behavior of a
+## one-unit order.
+func _move_to_entity(w: SimEntity, t: SimEntity) -> void:
+	var c := SimCommand.new(w.player, SimCommand.Kind.MOVE)
+	c.targets = [w.id]
+	c.params = {"x": t.x, "y": t.y, "internal": true}
+	_order_move(c)
+
+
+# --- MINE / SET_ECONOMY (design_m4.md §3.2, §12) ------------------------------
+
+
+## Manual harvest order: assign workers to a node and nudge the dials toward
+## that resource (no per-unit pin — the dials are the whole truth, §3.2).
+func _execute_mine(cmd: SimCommand) -> void:
+	var node: SimEntity = entities.get(cmd.params.get("node", 0))
+	var role := _role_of_source(node)
+	if role == 0:
+		return
+	var n := 0
+	for w in _own_units(cmd):
+		if not _is_worker(w):
+			continue
+		w.assigned_source = node.id
+		w.harvest_role = role
+		if w.carry > 0:
+			w.harvest_state = SimEntity.HarvestState.TO_DEPOT
+		else:
+			w.harvest_state = SimEntity.HarvestState.TO_SOURCE
+			_move_to_entity(w, node)
+		n += 1
+	if n > 0:
+		_nudge_alloy_flux(cmd.player_id, role, n)
+
+
+## Bias alloy_flux_ratio toward the manually-ordered resource by the ordered
+## workers' share of the fleet (§3.2). How far is a tuning question (§18);
+## this is the simple share-proportional nudge.
+func _nudge_alloy_flux(pid: int, role: int, n: int) -> void:
+	var p: SimPlayer = players.get(pid)
+	if p == null:
+		return
+	var total := 0
+	for id in entities:
+		var e: SimEntity = entities[id]
+		if e.hp > 0 and e.player == pid and _is_worker(e):
+			total += 1
+	if total <= 0:
+		return
+	var share := Fixed.div(Fixed.from_int(n), Fixed.from_int(total))
+	if role == 1:
+		p.alloy_flux_ratio = mini(Fixed.ONE, p.alloy_flux_ratio + share)
+	else:
+		p.alloy_flux_ratio = maxi(0, p.alloy_flux_ratio - share)
+
+
+func _execute_set_economy(cmd: SimCommand) -> void:
+	var p: SimPlayer = players.get(cmd.player_id)
+	if p == null:
+		return
+	p.worker_target = maxi(0, cmd.params.get("worker_target", p.worker_target))
+	p.alloy_flux_ratio = clampi(cmd.params.get("alloy_flux_ratio",
+			p.alloy_flux_ratio), 0, Fixed.ONE)
+	p.build_mine_ratio = clampi(cmd.params.get("build_mine_ratio",
+			p.build_mine_ratio), 0, Fixed.ONE)
+	p.auto_repair = cmd.params.get("auto_repair", p.auto_repair)
+
+
+# --- worker build + repair (design_m4.md §4) ----------------------------------
+
+
+## Manual repair order: send workers to heal a damaged own COMPLETE
+## structure. Piggybacks on the build path (a worker on a damaged structure
+## heals instead of progressing construction, §4.2).
+func _execute_repair(cmd: SimCommand) -> void:
+	var t: SimEntity = entities.get(cmd.params.get("target", 0))
+	if t == null or t.player != cmd.player_id \
+			or t.kind != SimEntity.Kind.STRUCTURE:
+		return
+	for w in _own_units(cmd):
+		if not _is_worker(w):
+			continue
+		w.build_target = t.id
+		w.harvest_state = SimEntity.HarvestState.IDLE
+		w.assigned_source = 0
+		w.orders.clear()
+		_move_to_entity(w, t)
+
+
+## Workers raise the structures and walls they're committed to: walk to the
+## site, then (on site) contribute build_rate / repair. Multiple builders on
+## one site accelerate it for a per-tick resource drain (the WC3 model, §4.1).
+func _worker_build_system() -> void:
+	_wall_system()
+	var groups := {}  # target id -> Array[SimEntity] builders on site, ascending id
+	for id in _sorted_ids():
+		var w: SimEntity = entities[id]
+		if not w.is_unit() or w.hp <= 0 or w.build_target == 0:
+			continue
+		var t: SimEntity = entities.get(w.build_target)
+		if not _valid_build_target(t, w):
+			w.build_target = 0
+			continue
+		if _within_reach(w, t):
+			w.orders.clear()  # plant on site, immobile while building
+			if not groups.has(t.id):
+				groups[t.id] = []
+			groups[t.id].append(w)
+		elif w.orders.is_empty():
+			_move_to_entity(w, t)  # walk to / return to the site
+	var max_builders: int = catalog.globals["max_builders"]
+	var accel: int = catalog.globals["accel_cost_rate"] / TICK_RATE
+	for tid in groups:
+		var t: SimEntity = entities[tid]
+		var p: SimPlayer = players.get(t.player)
+		var builders: Array = groups[tid]
+		for i in builders.size():
+			if i >= max_builders:
+				break  # beyond the cap: extra workers idle on site
+			# The first builder is free (the cost already paid for it); each
+			# extra drains accel_cost_rate and stops the instant funds run out.
+			if i > 0:
+				if p == null or p.alloy < accel:
+					continue
+				p.alloy -= accel
+			_apply_builder(builders[i], t)
+
+
+## A worker's build target is still worth working: an own GROWING structure,
+## or an own COMPLETE structure that is damaged (repair). Otherwise the
+## worker is freed.
+func _valid_build_target(t: SimEntity, w: SimEntity) -> bool:
+	if t == null or t.hp <= 0 or t.player != w.player \
+			or t.kind != SimEntity.Kind.STRUCTURE:
+		return false
+	if t.build_state == SimEntity.BuildState.GROWING:
+		return true
+	return t.build_state == SimEntity.BuildState.COMPLETE and t.hp < t.max_hp
+
+
+## One on-site builder's contribution this tick: construction progress to a
+## GROWING structure (via assist_bonus, consumed by the structures phase),
+## or repair to a damaged COMPLETE one.
+func _apply_builder(w: SimEntity, t: SimEntity) -> void:
+	if t.build_state == SimEntity.BuildState.GROWING:
+		t.assist_bonus += _build_rate_of(w)
+	elif t.hp < t.max_hp:
+		t.heal_acc += _repair_rate_of(w)
+
+
+func _build_rate_of(w: SimEntity) -> int:
+	var rate: int = catalog.sim_of(w.type_key)["build_rate"]
+	if rate <= 0:
+		rate = catalog.globals["build_rate"]
+	return rate / TICK_RATE
+
+
+func _repair_rate_of(w: SimEntity) -> int:
+	var rate: int = catalog.sim_of(w.type_key)["repair_rate"]
+	if rate <= 0:
+		rate = catalog.globals["repair_rate"]
+	return rate / TICK_RATE
+
+
+# --- drawn walls (design_m4.md §4.4) ------------------------------------------
+
+
+## Install a per-player wall plan from a drawn stroke: an ordered queue of
+## pending segment cells. Pending segments block nothing and cost nothing
+## until a worker starts one, so a half-drawn plan never walls you in.
+func _execute_build_wall(cmd: SimCommand) -> void:
+	var p: SimPlayer = players.get(cmd.player_id)
+	if p == null:
+		return
+	var type: int = cmd.params.get("type", -1)
+	if type < 0 or type >= catalog.size() or catalog.kind_of(type) != "structure":
+		return
+	var cells: Array = cmd.params.get("cells", [])
+	if cells.is_empty():
+		return
+	p.wall_type = type
+	for c: int in cells:
+		var cx := c % grid.width
+		var cy := c / grid.width
+		if grid.in_bounds(cx, cy):
+			p.wall_cells.append(c)
+			p.wall_claims.append(0)
+
+
+## Drain each player's wall plan: assign free workers to the next unclaimed
+## pending cells, and when a claiming worker reaches its cell, start the
+## segment there (spawn GROWING, charge it then, hand it to the build path).
+func _wall_system() -> void:
+	var pids := players.keys()
+	pids.sort()
+	for pid in pids:
+		var p: SimPlayer = players.get(pid)
+		if p == null or p.wall_cells.is_empty() or p.wall_type < 0:
+			continue
+		var kept_cells := PackedInt32Array()
+		var kept_claims := PackedInt32Array()
+		for i in p.wall_cells.size():
+			var cell: int = p.wall_cells[i]
+			var claimer: int = p.wall_claims[i]
+			var w: SimEntity = entities.get(claimer) if claimer != 0 else null
+			if w == null or not w.is_unit() or w.hp <= 0 \
+					or w.wall_target_cell != cell:
+				claimer = 0
+				w = null
+			if w == null:
+				var pick := _nearest_available_builder(pid, cell)
+				if pick != null:
+					claimer = pick.id
+					pick.wall_target_cell = cell
+					_move_to_cell(pick, cell)
+					w = pick
+			if w != null and _within_cell_reach(w, cell) \
+					and not grid.is_blocked(cell % grid.width, cell / grid.width):
+				# Start the segment: spawn it GROWING+frozen, charge now.
+				var seg := _spawn_structure_entity(pid, cell % grid.width,
+						cell / grid.width, p.wall_type, false, 0)
+				seg.needs_builder = true
+				p.alloy -= Fixed.from_int(catalog.globals["wall_cost_alloy"])
+				w.build_target = seg.id
+				w.wall_target_cell = -1
+				continue  # drop this cell from the pending plan
+			kept_cells.append(cell)
+			kept_claims.append(claimer)
+		p.wall_cells = kept_cells
+		p.wall_claims = kept_claims
+		if p.wall_cells.is_empty():
+			p.wall_type = -1
+
+
+## Nearest free worker to a cell (build-reserve preferred over harvesters,
+## §3.2), ties to lowest id. Free = not already building or claiming a wall.
+func _nearest_available_builder(pid: int, cell: int) -> SimEntity:
+	var cx := grid.cell_center(cell % grid.width)
+	var cy := grid.cell_center(cell / grid.width)
+	var best: SimEntity = null
+	var best_key := [1, 0x7FFFFFFFFFFFFFF]  # [is_harvester, dist2]; reserve wins
+	for id in _sorted_ids():
+		var w: SimEntity = entities[id]
+		if not w.is_unit() or w.hp <= 0 or w.player != pid or not _is_worker(w):
+			continue
+		if w.build_target != 0 or w.wall_target_cell != -1:
+			continue
+		var dx := cx - w.x
+		var dy := cy - w.y
+		var d2 := Fixed.mul(dx, dx) + Fixed.mul(dy, dy)
+		var is_harv := 0 if w.harvest_role == 0 else 1
+		if is_harv < best_key[0] or (is_harv == best_key[0] and d2 < best_key[1]):
+			best = w
+			best_key = [is_harv, d2]
+	return best
+
+
+func _within_cell_reach(w: SimEntity, cell: int) -> bool:
+	var cx := grid.cell_center(cell % grid.width)
+	var cy := grid.cell_center(cell / grid.width)
+	var reach := w.radius + SimGrid.CELL + HARVEST_REACH
+	var dx := cx - w.x
+	var dy := cy - w.y
+	if absi(dx) > reach or absi(dy) > reach:
+		return false
+	return Fixed.mul(dx, dx) + Fixed.mul(dy, dy) <= Fixed.mul(reach, reach)
+
+
+func _move_to_cell(w: SimEntity, cell: int) -> void:
+	var c := SimCommand.new(w.player, SimCommand.Kind.MOVE)
+	c.targets = [w.id]
+	c.params = {"x": grid.cell_center(cell % grid.width),
+			"y": grid.cell_center(cell / grid.width), "internal": true}
+	_order_move(c)
+
+
 # --- structure lifecycle (design_m3.md §4.5) -----------------------------------
 
 
@@ -1741,7 +2666,11 @@ func _units_on_footprint(e: SimEntity) -> bool:
 ## growth persists (the ramp adds deltas, it doesn't set totals).
 func _grow_tick(e: SimEntity) -> void:
 	var total := Fixed.from_int(catalog.sim_of(e.type_key)["build_time"])
-	var progress := Fixed.ONE + e.assist_bonus
+	# Worker-built structures (needs_builder) make no progress on their own:
+	# all progress is the build_rate a worker on site contributes via
+	# assist_bonus (design_m4.md §4.1). Pull the worker and it freezes.
+	var auto := 0 if e.needs_builder else Fixed.ONE
+	var progress := auto + e.assist_bonus
 	e.assist_bonus = 0
 	var prev := e.build_ticks_left
 	e.build_ticks_left = maxi(0, prev - progress)
@@ -1766,6 +2695,18 @@ func _ramp_hp(max_hp: int, total: int, left: int) -> int:
 ## differently the moment build_state flips.
 func _on_structure_complete(e: SimEntity) -> void:
 	var s := catalog.sim_of(e.type_key)
+	# A Refinery auto-links every Flux vent within refinery_radius at COMPLETE
+	# (design_m4.md §3.1), ascending vent id; vents don't move, so resolve once.
+	if s.get("is_refinery", false):
+		var r: int = s["refinery_radius"]
+		if r <= 0:
+			r = catalog.globals["refinery_radius"]
+		e.linked_vents = PackedInt32Array()
+		for id in _sorted_ids():
+			var n: SimEntity = entities[id]
+			if n.is_resource() and n.resource_kind == CatalogSchema.ResourceKind.FLUX \
+					and _circle_covers(e.x, e.y, r, n.x, n.y):
+				e.linked_vents.append(id)
 	var pool: int = s["nano_pool"]
 	if pool > 0:
 		match s["default_allocation"]:
@@ -1908,6 +2849,7 @@ func _modifier_values(e: SimEntity, key: String) -> Array[int]:
 ## entities. Derived data — recomputed from hashed state on a fixed
 ## cadence, never hashed itself.
 func _recompute_vision() -> void:
+	_rebuild_occluders()
 	var pids := players.keys()
 	pids.sort()
 	for pid: int in pids:
@@ -1920,7 +2862,47 @@ func _recompute_vision() -> void:
 			if e.is_underground():
 				continue # burrowed units see nothing from down there
 			_stamp_sight(vis, e)
+		# Capsule detection (design_m4.md §6.3): a detector reveals enemy
+		# aerial entities within its sight, even through fog and walls.
+		for id in _sorted_ids():
+			var det: SimEntity = entities[id]
+			if det.player != pid or not _functional(det) or det.sight <= 0 \
+					or not catalog.sim_of(det.type_key).get("detects_capsules", false):
+				continue
+			for eid in _sorted_ids():
+				var cap: SimEntity = entities[eid]
+				if cap.player == pid or not cap.is_aerial():
+					continue
+				if _within_dist(det.x, det.y, cap.x, cap.y, det.sight):
+					_stamp_entity_tiles(vis, cap)
 		_vision[pid] = vis
+
+
+## Per-build-tile LOS height from standing structures (design_m4.md §6.5),
+## rebuilt each vision tick (derived, never hashed). Vision is tile-resolution,
+## so a sub-tile Barricade marks its whole tile an occluder — coarse but
+## consistent, and a wall chain shadows a clean line. Written general so M5
+## cliffs/ramps drop into the same height test.
+func _rebuild_occluders() -> void:
+	if _occluders.size() != grid.tiles_w * grid.tiles_h:
+		_occluders.resize(grid.tiles_w * grid.tiles_h)
+	for i in _occluders.size():
+		_occluders[i] = 0
+	_has_occluders = false
+	for id in entities:
+		var e: SimEntity = entities[id]
+		if e.kind != SimEntity.Kind.STRUCTURE or e.hp <= 0 or not e.blocks:
+			continue
+		var h: int = catalog.sim_of(e.type_key).get("los_height", 0)
+		if h <= 0:
+			continue
+		_has_occluders = true
+		for fy in range(e.foot_y, e.foot_y + e.foot_h):
+			for fx in range(e.foot_x, e.foot_x + e.foot_w):
+				var tx := fx / SimGrid.PATH_SUBDIV
+				var ty := fy / SimGrid.PATH_SUBDIV
+				if tx >= 0 and ty >= 0 and tx < grid.tiles_w and ty < grid.tiles_h:
+					_occluders[ty * grid.tiles_w + tx] = h
 
 
 func _stamp_sight(vis: PackedByteArray, e: SimEntity) -> void:
@@ -1930,14 +2912,65 @@ func _stamp_sight(vis: PackedByteArray, e: SimEntity) -> void:
 	var ty0 := maxi(0, Fixed.to_int(e.y - r))
 	var ty1 := mini(grid.tiles_h - 1, Fixed.to_int(e.y + r))
 	var r2 := Fixed.mul(r, r)
+	var sx := clampi(Fixed.to_int(e.x), 0, grid.tiles_w - 1)
+	var sy := clampi(Fixed.to_int(e.y), 0, grid.tiles_h - 1)
 	for ty in range(ty0, ty1 + 1):
 		var dy := ty * Fixed.ONE + Fixed.HALF - e.y
 		var dy2 := Fixed.mul(dy, dy)
 		var row := ty * grid.tiles_w
 		for tx in range(tx0, tx1 + 1):
 			var dx := tx * Fixed.ONE + Fixed.HALF - e.x
-			if Fixed.mul(dx, dx) + dy2 <= r2:
-				vis[row + tx] = 1
+			if Fixed.mul(dx, dx) + dy2 > r2:
+				continue
+			# Height-gated LOS (§6.5): a wall between source and tile occludes
+			# it. The cheap open-ground disc skips this whole test.
+			if _has_occluders and not _los_unoccluded(sx, sy, tx, ty):
+				continue
+			vis[row + tx] = 1
+
+
+## True if the supercover line between two build tiles crosses no occluder
+## tile before reaching the target (the source sees up to and including its
+## own wall, §6.5).
+func _los_unoccluded(x0: int, y0: int, x1: int, y1: int) -> bool:
+	var w := grid.tiles_w
+	var dx := absi(x1 - x0)
+	var dy := absi(y1 - y0)
+	var x := x0
+	var y := y0
+	var x_inc := 1 if x1 > x0 else -1
+	var y_inc := 1 if y1 > y0 else -1
+	var error := dx - dy
+	dx *= 2
+	dy *= 2
+	while true:
+		if x == x1 and y == y1:
+			return true
+		if (x != x0 or y != y0) and _occluders[y * w + x] > 0:
+			return false  # a wall stands strictly between source and tile
+		if error > 0:
+			x += x_inc
+			error -= dy
+		elif error < 0:
+			y += y_inc
+			error += dx
+		else:
+			x += x_inc
+			y += y_inc
+			error -= dy
+			error += dx
+	return true
+
+
+## Mark the build tiles an entity's footprint/position covers as visible.
+func _stamp_entity_tiles(vis: PackedByteArray, e: SimEntity) -> void:
+	var tx0 := clampi(Fixed.to_int(e.x - e.radius), 0, grid.tiles_w - 1)
+	var tx1 := clampi(Fixed.to_int(e.x + e.radius), 0, grid.tiles_w - 1)
+	var ty0 := clampi(Fixed.to_int(e.y - e.radius), 0, grid.tiles_h - 1)
+	var ty1 := clampi(Fixed.to_int(e.y + e.radius), 0, grid.tiles_h - 1)
+	for ty in range(ty0, ty1 + 1):
+		for tx in range(tx0, tx1 + 1):
+			vis[ty * grid.tiles_w + tx] = 1
 
 
 func is_tile_visible(player: int, tx: int, ty: int) -> bool:
@@ -1957,6 +2990,65 @@ func is_cell_visible(player: int, cx: int, cy: int) -> bool:
 ## Batch read for the view/minimap: one byte per build tile, row-major.
 func vision_of(player: int) -> PackedByteArray:
 	return _vision.get(player, PackedByteArray())
+
+
+## Whether `player` can legitimately see entity `e` right now (design_m4.md
+## §6.4–6.5) — the knowledge primitive the order resolver and view consult.
+## Own entities always; aerial entities by radius only (seen over walls);
+## ground entities only in a non-occluded visible tile.
+func is_entity_visible(player: int, e: SimEntity) -> bool:
+	if e == null or e.hp <= 0:
+		return false
+	if e.player == player:
+		return true
+	if e.is_aerial():
+		for id in entities:
+			var s: SimEntity = entities[id]
+			if s.player == player and _functional(s) and s.sight > 0 \
+					and _within_dist(s.x, s.y, e.x, e.y, s.sight):
+				return true
+		return false
+	return is_tile_visible(player, Fixed.to_int(e.x), Fixed.to_int(e.y))
+
+
+# --- win/loss (design_m4.md §7) -----------------------------------------------
+
+
+## The town-hall rule: a player is eliminated the tick they first hold no
+## COMPLETE `is_main` structure (§7.1). Latched in eliminated_tick and never
+## cleared — a replacement that finishes after the latch does not save you.
+func _check_elimination() -> void:
+	var has_main := {}
+	for id in entities:
+		var e: SimEntity = entities[id]
+		if e.kind == SimEntity.Kind.STRUCTURE and _functional(e) \
+				and catalog.sim_of(e.type_key).get("is_main", false):
+			has_main[e.player] = true
+	for pid in players:
+		var p: SimPlayer = players[pid]
+		if has_main.get(pid, false):
+			p.had_main = true
+		elif p.had_main and p.eliminated_tick == -1:
+			p.eliminated_tick = tick
+
+
+## {"over": bool, "winner": int, "eliminated": {pid: tick}}. Match-over is
+## derived: with two or more real players (id != 0), the match ends when at
+## most one remains un-eliminated; winner 0 means none yet / a draw (§7.2).
+func match_result() -> Dictionary:
+	var alive: Array[int] = []
+	var elim := {}
+	var real := 0
+	for pid in players:
+		if pid == 0:
+			continue
+		real += 1
+		elim[pid] = players[pid].eliminated_tick
+		if players[pid].eliminated_tick == -1:
+			alive.append(pid)
+	var over := real >= 2 and alive.size() <= 1
+	var winner := alive[0] if (over and alive.size() == 1) else 0
+	return {"over": over, "winner": winner, "eliminated": elim}
 
 
 # --- bandwidth (design_m3.md §4.1) --------------------------------------------

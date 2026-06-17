@@ -1,12 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(/tmp/godot-bin/Godot_v4.6.3-stable_linux.x86_64 --headless --path . --import)",
-      "Bash(timeout 300 /tmp/godot-bin/Godot_v4.6.3-stable_linux.x86_64 --headless --path . -s res://tests/perf_check.gd)",
-      "Bash(grep -vE \"fontconfig|Godot Engine|^$\")",
-      "Bash(/tmp/godot-bin/Godot_v4.6.3-stable_linux.x86_64 --headless --path . -s res://tests/catalog_check.gd)",
-      "Bash(git add *)",
-      "Bash(git commit -q -m 'M3 step 1: object catalog — schema, compiler, Hive/core data, catalog_check *)"
+      "Bash"
     ]
   }
 }

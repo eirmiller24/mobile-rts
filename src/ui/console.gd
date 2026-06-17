@@ -248,6 +248,12 @@ func _build_widget(widget: UICatalog.WidgetDef) -> Control:
 		"group_roster":
 			if ctx != null:
 				return ConsoleWidgets.GroupRoster.new(ctx)
+		"worker_dials":
+			if ctx != null:
+				return ConsoleWidgets.WorkerDials.new(ctx)
+		"stance_picker":
+			if ctx != null:
+				return ConsoleWidgets.StancePicker.new(ctx)
 		"minimap":
 			if ctx != null:
 				var mini := MinimapView.new()
@@ -271,8 +277,19 @@ func _build_widget(widget: UICatalog.WidgetDef) -> Control:
 func _on_widget_pressed(widget: UICatalog.WidgetDef) -> void:
 	if widget.action.begins_with("screen:"):
 		_show_screen(widget.action.trim_prefix("screen:"))
-	else:
-		print("[console] '%s' tapped (no action wired yet)" % widget.label)
+		return
+	# A button bound to a verb (e.g. the Rebel draw-wall verb, design_m4.md
+	# §4.4): arm the viewport gesture for it through the context hook. The
+	# BUILD_WALL sim path is complete; the stroke-rasterization gesture is the
+	# remaining viewport wiring.
+	var command: String = widget.params.get("command", "")
+	if not command.is_empty() and ctx != null and ctx.arm_verb.is_valid():
+		ctx.arm_verb.call(command)
+		return
+	if not command.is_empty():
+		print("[console] verb '%s' armed (viewport gesture pending)" % command)
+		return
+	print("[console] '%s' tapped (no action wired yet)" % widget.label)
 
 
 func _on_back() -> void:

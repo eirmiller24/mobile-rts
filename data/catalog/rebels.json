@@ -1,0 +1,268 @@
+{
+	"rebels.worker_build": {
+		"kind": "ability",
+		"sim": {
+			"ability_kind": "build",
+			"mechanic": "worker",
+			"structures": [
+				"rebels.headquarters",
+				"rebels.housing",
+				"rebels.refinery",
+				"rebels.barricade"
+			]
+		},
+		"ui": {
+			"label": "Build",
+			"description": "Send a worker to raise a structure on reachable ground."
+		}
+	},
+	"rebels.headquarters": {
+		"kind": "structure",
+		"sim": {
+			"hp": 1600,
+			"foot_w": 6,
+			"foot_h": 6,
+			"armor_class": "structure",
+			"damage": 15,
+			"attack_class": "shock",
+			"attack_range": "7.0",
+			"acquire_range": "8.0",
+			"cooldown": "1.0",
+			"hits_air": true,
+			"cost_alloy": 450,
+			"build_time": "50.0",
+			"sight": "16.0",
+			"bandwidth_provided": 10,
+			"is_depot": true,
+			"is_main": true,
+			"trains": [
+				"rebels.worker",
+				"rebels.gunner",
+				"rebels.watcher",
+				"rebels.demolisher",
+				"rebels.marauder"
+			]
+		},
+		"view": {
+			"shape": "box",
+			"color": "8d4a2f",
+			"height": 2.6
+		},
+		"ui": {
+			"label": "Headquarters",
+			"description": "Heart of the Rebels: trains workers and soldiers, the resource depot, and a stinger of its own."
+		}
+	},
+	"rebels.housing": {
+		"kind": "structure",
+		"sim": {
+			"hp": 350,
+			"foot_w": 4,
+			"foot_h": 4,
+			"armor_class": "structure",
+			"cost_alloy": 100,
+			"build_time": "18.0",
+			"sight": "8.0",
+			"bandwidth_provided": 10
+		},
+		"view": {
+			"shape": "box",
+			"color": "a1887f",
+			"height": 1.6
+		},
+		"ui": {
+			"label": "Housing",
+			"description": "Crew supply for the Rebel army."
+		}
+	},
+	"rebels.refinery": {
+		"kind": "structure",
+		"sim": {
+			"hp": 450,
+			"foot_w": 4,
+			"foot_h": 4,
+			"armor_class": "structure",
+			"cost_alloy": 150,
+			"build_time": "22.0",
+			"sight": "7.0",
+			"is_refinery": true
+		},
+		"view": {
+			"shape": "cylinder",
+			"color": "6d4c41",
+			"height": 1.4
+		},
+		"ui": {
+			"label": "Refinery",
+			"description": "Pools nearby Flux vents into one fast, high-capacity harvest source."
+		}
+	},
+	"rebels.barricade": {
+		"kind": "structure",
+		"sim": {
+			"hp": 120,
+			"foot_w": 1,
+			"foot_h": 1,
+			"armor_class": "structure",
+			"cost_alloy": 5,
+			"build_time": "3.0",
+			"los_height": 2,
+			"is_wall": true
+		},
+		"view": {
+			"shape": "box",
+			"color": "5d4037",
+			"height": 2.0
+		},
+		"ui": {
+			"label": "Barricade",
+			"description": "A drawn wall segment. Blocks movement and ground sight; dies on its own."
+		}
+	},
+	"rebels.worker": {
+		"kind": "unit",
+		"sim": {
+			"hp": 60,
+			"damage": 3,
+			"attack_class": "claw",
+			"armor_class": "light",
+			"radius": "0.4",
+			"speed": "3.0",
+			"attack_range": "0.4",
+			"acquire_range": "4.0",
+			"cooldown": "1.0",
+			"sight": "8.0",
+			"bandwidth": 1,
+			"cost_alloy": 50,
+			"train_time": "14.0",
+			"carry_capacity": 10,
+			"harvest_rate": "2.0",
+			"build_rate": "20.0",
+			"abilities": [
+				"rebels.worker_build"
+			]
+		},
+		"view": {
+			"shape": "capsule",
+			"color": "ffb74d",
+			"height": 1.0
+		},
+		"ui": {
+			"label": "Worker",
+			"description": "Harvests, builds, and repairs. Killable \u2014 protect your mineral line."
+		}
+	},
+	"rebels.gunner": {
+		"kind": "unit",
+		"sim": {
+			"hp": 110,
+			"damage": 12,
+			"attack_class": "shock",
+			"armor_class": "light",
+			"radius": "0.4",
+			"speed": "3.2",
+			"attack_range": "5.0",
+			"acquire_range": "7.0",
+			"cooldown": "1.0",
+			"sight": "9.0",
+			"hits_air": true,
+			"bandwidth": 2,
+			"cost_alloy": 75,
+			"train_time": "12.0"
+		},
+		"view": {
+			"shape": "capsule",
+			"color": "bcaaa4",
+			"height": 1.2
+		},
+		"ui": {
+			"label": "Gunner",
+			"description": "Solid all-rounder. Bonus damage against structures under construction."
+		}
+	},
+	"rebels.watcher": {
+		"kind": "unit",
+		"sim": {
+			"hp": 70,
+			"damage": 4,
+			"attack_class": "shock",
+			"armor_class": "light",
+			"radius": "0.35",
+			"speed": "3.3",
+			"attack_range": "5.0",
+			"acquire_range": "6.0",
+			"cooldown": "1.2",
+			"sight": "16.0",
+			"hits_air": true,
+			"detects_capsules": true,
+			"bandwidth": 1,
+			"cost_alloy": 60,
+			"train_time": "14.0"
+		},
+		"view": {
+			"shape": "capsule",
+			"color": "fff176",
+			"height": 1.1
+		},
+		"ui": {
+			"label": "Watcher",
+			"description": "Long sight and capsule detection. Fragile \u2014 your early warning."
+		}
+	},
+	"rebels.demolisher": {
+		"kind": "unit",
+		"sim": {
+			"hp": 160,
+			"damage": 18,
+			"attack_class": "acid",
+			"armor_class": "armored",
+			"radius": "0.5",
+			"speed": "2.2",
+			"attack_range": "5.0",
+			"acquire_range": "7.0",
+			"cooldown": "1.6",
+			"sight": "8.0",
+			"hits_air": true,
+			"bandwidth": 3,
+			"cost_alloy": 130,
+			"cost_flux": 25,
+			"train_time": "22.0"
+		},
+		"view": {
+			"shape": "capsule",
+			"color": "8d6e63",
+			"height": 1.4
+		},
+		"ui": {
+			"label": "Demolisher",
+			"description": "Anti-structure specialist and the dedicated capsule-killer."
+		}
+	},
+	"rebels.marauder": {
+		"kind": "unit",
+		"sim": {
+			"hp": 80,
+			"damage": 10,
+			"attack_class": "shock",
+			"armor_class": "light",
+			"radius": "0.4",
+			"speed": "5.0",
+			"attack_range": "1.0",
+			"acquire_range": "6.0",
+			"cooldown": "1.0",
+			"sight": "11.0",
+			"bandwidth": 2,
+			"cost_alloy": 90,
+			"train_time": "16.0"
+		},
+		"view": {
+			"shape": "capsule",
+			"color": "d7ccc8",
+			"height": 1.0
+		},
+		"ui": {
+			"label": "Marauder Bike",
+			"description": "Fast ground harasser for hunting relays and outlying nests."
+		}
+	}
+}

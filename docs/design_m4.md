@@ -1285,6 +1285,39 @@ Dependency-driven; each step lands with its tests green:
 Tracked here so they don't silently become decisions (answers fold back
 into this doc).
 
+*Implementation notes (M4 build, 2026-06-17).* The sim is feature-complete
+and headless-tested (steps 1–8 + the determinism/perf extensions all green);
+the match/UI/view integration is wired but its presentation is unverified
+off-device. Small deviations made during implementation, none load-bearing:
+
+- **Worker-built structures spawn GROWING + `needs_builder` immediately**
+  (matching §4.1's field table, not a separate "reserved-unstarted" pre-spawn
+  state). `needs_builder` zeroes the `Fixed.ONE`/tick auto-progress; a worker
+  on site supplies all progress via `build_rate` through the `assist_bonus`
+  channel. Consequence: the "full refund before GROWING begins" window (§4.1)
+  collapses for direct builds — cancel is always the 50% partial — and lives
+  instead on the drawn-wall *pending* queue (uncharged until a worker starts a
+  segment), which is the same idea.
+- **Internal sim moves carry `params.internal = true`** so harvest/build/wall
+  travel doesn't detach a worker from its task; a player-issued order (no flag)
+  *does* detach — this is the §4.1 "pull the worker, construction pauses" rule.
+- **Stances are a thin post-combat layer** (`_stance_system`) using direct
+  fixed-point steering, no pathfinding — adequate for the v1 stance set;
+  BALANCED is unchanged M3 behavior so existing tests/determinism hold.
+- **Wall vision occlusion is computed at build-tile resolution** (a 1×1
+  Barricade marks its whole tile an occluder), consistent with the
+  tile-resolution fog map and the "sees up to its own wall" rule (§6.5).
+- **The bot takes `scout_hints`** (enemy start positions from the match setup)
+  to find a fogged base; otherwise it is a pure command source over
+  `SimCommand` and its recorded stream replays bit-exactly (`bot_check`).
+- **Deferred view polish** (not blocking the game loop, unverified off-device):
+  last-seen structure ghosts (§6.2), worker carry/build pose visuals, the
+  capsule-detection ping (§6.3), and the pre-match faction-select screen — M4
+  runs the local human as Hive vs a Rebel bot on `dev_clash.json` by default.
+  The **drawn-wall stroke gesture** (rasterize a finger drag → `BUILD_WALL`)
+  is the one viewport interaction still to wire; the `BUILD_WALL` sim path and
+  the Rebel "Draw Wall" verb are in place.
+
 1. **Bot difficulty surface** — how many scalars before "difficulty" is
    legible to a player (§8.2)? Starting hypothesis: 3 named tiers backed by
    the scalar bundle.

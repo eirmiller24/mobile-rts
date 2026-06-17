@@ -27,6 +27,9 @@ var status := Callable()
 ## func() -> Array[int] — the current viewport selection's entity ids, sorted.
 ## Used by the Organize roster to snapshot a new control group.
 var selected_ids := Callable()
+## func(verb: String) — arm a viewport gesture verb (e.g. the Rebel draw-wall
+## stroke, design_m4.md §4.4). Optional; unwired in M4's structural shell.
+var arm_verb := Callable()
 
 
 func affordable(type_key: int) -> bool:

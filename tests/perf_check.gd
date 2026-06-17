@@ -41,6 +41,18 @@ func _initialize() -> void:
 	sim.spawn_structure(0, 100, 110, hub_key, false) # growing, assist target
 	for i in 12:
 		sim.spawn_structure(0, 30 + i * 3, 118, sim.catalog.key_of(TestSupport.WALL))
+
+	# A second, Rebel-style worker economy running alongside (design_m4.md §16):
+	# a depot and a fleet of harvesters cycling to the deposits each tick.
+	var worker_key := sim.catalog.key_of(TestSupport.WORKER)
+	sim.spawn_structure(0, 8, 100, sim.catalog.key_of(TestSupport.DEPOT))
+	for i in 30:
+		sim.spawn_unit(0, Fixed.from_int(6 + (i % 6)), Fixed.from_int(98 + (i / 6)), worker_key)
+	var econ := SimCommand.new(0, SimCommand.Kind.SET_ECONOMY)
+	econ.params = {"worker_target": 30, "alloy_flux_ratio": Fixed.ONE,
+			"build_mine_ratio": 0, "auto_repair": false}
+	sim.schedule(econ, 4)
+
 	var seq := 0
 	for i in hubs.size():
 		var alloc := SimCommand.new(0, SimCommand.Kind.ALLOCATE_ECONOMY)

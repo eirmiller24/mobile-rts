@@ -118,6 +118,37 @@ var surface_y: int = 0
 ## ability type_key (int) -> ticks until ready again.
 var ability_cooldowns: Dictionary = {}
 
+## M4 worker harvest economy (design_m4.md §3). The loop is a small state
+## machine stored in hashed entity fields; carry is fixed-point resource
+## units of carry_kind. harvest_role is the dial reconcile's per-worker
+## assignment (0 NONE/build-reserve, 1 ALLOY, 2 FLUX).
+enum HarvestState { IDLE, TO_SOURCE, HARVESTING, TO_DEPOT, DEPOSITING }
+var harvest_state := HarvestState.IDLE
+var carry: int = 0          # fixed
+var carry_kind: int = -1    # CatalogSchema.ResourceKind; -1 = empty
+var assigned_source: int = 0  # source entity id (deposit / vent / refinery)
+var harvest_role: int = 0   # 0 NONE, 1 ALLOY, 2 FLUX
+
+## M4 worker build (design_m4.md §4). build_target is the GROWING structure
+## this worker is raising/repairing; >0 means BUILDING (immobile on site).
+var build_target: int = 0
+## Drawn-wall segment cell this worker is walking to raise (§4.4); -1 none.
+var wall_target_cell: int = -1
+## M4 (design_m4.md §4.1): a worker-built structure spawns GROWING but
+## frozen until a worker is on site. The Hive's instant path leaves it false.
+var needs_builder: bool = false
+## M4 refinery (design_m4.md §3.1): the Flux vents an is_refinery structure
+## auto-linked at COMPLETE, ascending id. Compiled, not authored.
+var linked_vents := PackedInt32Array()
+
+## M4 unit AI (design_m4.md §9). stance + priority-flag bitfield; anchor is
+## the defensive hold point (anchor_set guards the 0,0 sentinel ambiguity).
+var stance: int = 0         # CatalogSchema.Stance
+var tactic_flags: int = 0   # CatalogSchema.TacticFlag bitfield
+var anchor_x: int = 0
+var anchor_y: int = 0
+var anchor_set: bool = false
+
 
 func is_underground() -> bool:
 	return underground_ticks_left > 0
@@ -147,8 +178,13 @@ func hash_into(h: int) -> int:
 			build_state, build_ticks_left, assist_bonus, heal_acc, vent_id,
 			nano_alloc[0], nano_alloc[1], nano_alloc[2],
 			rally_x, rally_y, int(morphed), morph_ticks_left,
-			underground_ticks_left, surface_x, surface_y]:
+			underground_ticks_left, surface_x, surface_y,
+			harvest_state, carry, carry_kind, assigned_source, harvest_role,
+			build_target, wall_target_cell, int(needs_builder),
+			stance, tactic_flags, anchor_x, anchor_y, int(anchor_set)]:
 		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF
+	for vent in linked_vents:
+		h = (h * 31 + vent) & 0x7FFFFFFFFFFFFFF
 	for q in train_queue:
 		h = (h * 31 + q["type"]) & 0x7FFFFFFFFFFFFFF
 		h = (h * 31 + q["left"]) & 0x7FFFFFFFFFFFFFF

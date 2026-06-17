@@ -1,0 +1,30 @@
+{
+	"manifest": { "name": "Dev Clash", "version": 1, "players": 2 },
+	"catalog_layers": [
+		"res://data/catalog/core.json",
+		"res://data/catalog/hive.json",
+		"res://data/catalog/rebels.json"
+	],
+	"terrain": { "tiles_w": 96, "tiles_h": 96 },
+	"players": [
+		{ "id": 1, "faction": "hive", "start_alloy": 500, "start_flux": 100 },
+		{ "id": 2, "faction": "rebels", "start_alloy": 500, "start_flux": 100 }
+	],
+	"starts": [
+		{ "player": 1, "cx": 20, "cy": 20 },
+		{ "player": 2, "cx": 166, "cy": 166 }
+	],
+	"objects": [
+		{ "type": "core.alloy_deposit", "cx": 34, "cy": 20 },
+		{ "type": "core.alloy_deposit", "cx": 20, "cy": 34 },
+		{ "type": "core.flux_vent", "cx": 36, "cy": 36 },
+
+		{ "type": "core.alloy_deposit", "cx": 152, "cy": 166 },
+		{ "type": "core.alloy_deposit", "cx": 166, "cy": 152 },
+		{ "type": "core.flux_vent", "cx": 150, "cy": 150 },
+
+		{ "type": "core.alloy_deposit", "cx": 90, "cy": 90 },
+		{ "type": "core.alloy_deposit", "cx": 100, "cy": 100 },
+		{ "type": "core.flux_vent", "cx": 94, "cy": 94 }
+	]
+}

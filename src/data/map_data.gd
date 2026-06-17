@@ -26,6 +26,12 @@ var players: Array[Dictionary] = []
 ##  units:                {type_key, type, player, x, y}  (fixed coords)
 var objects: Array[Dictionary] = []
 
+## Faction-agnostic start anchors (design_m4.md §13): {player, cx, cy} in
+## pathing cells. A match setup spawns each player's chosen faction loadout
+## here, so the same map plays any faction matchup. Not folded into the
+## hash — the spawned objects it produces are (via rehash after setup).
+var starts: Array[Dictionary] = []
+
 ## SimHash over tiles, players, and objects.
 var hash_value := 0
 

@@ -50,6 +50,7 @@
 		"kind": "structure",
 		"sim": {
 			"hp": 1500, "foot_w": 6, "foot_h": 6, "armor_class": "structure",
+			"is_main": true,
 			"damage": 15, "attack_class": "shock", "attack_range": "7.0",
 			"acquire_range": "8.0", "cooldown": "1.0", "hits_air": true,
 			"cost_alloy": 400, "build_time": "45.0", "capsule_cost_alloy": 150,

@@ -1,0 +1,28 @@
+{
+	"_comment": "Rebel UI override layer (design_m4.md §13.2): proof that 'UI as data' carries a whole second faction. Loaded as [default_ui.json, rebels_ui.json].",
+	"commands": {
+		"mine": { "label": "Mine", "color": "ffd54f" }
+	},
+	"context_orders": {
+		"resource": "mine"
+	},
+	"hud": {
+		"bandwidth": "Crew"
+	},
+	"console": {
+		"screens": {
+			"build": {
+				"title": "Build",
+				"widgets": [
+					{ "type": "structure_grid", "params": { "placement_screen": "build_place" } }
+				]
+			},
+			"economy": {
+				"title": "Economy",
+				"widgets": [
+					{ "type": "worker_dials" }
+				]
+			}
+		}
+	}
+}

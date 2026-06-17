@@ -3,11 +3,11 @@
 		"kind": "classes",
 		"sim": {
 			"attack_classes": ["claw", "acid", "shock"],
-			"armor_classes": ["light", "armored", "structure"],
+			"armor_classes": ["light", "armored", "structure", "construction"],
 			"matrix": {
-				"claw":  { "light": "1.0",  "armored": "0.75", "structure": "0.75" },
-				"acid":  { "light": "0.75", "armored": "1.5",  "structure": "1.25" },
-				"shock": { "light": "1.5",  "armored": "1.0",  "structure": "0.75" }
+				"claw":  { "light": "1.0",  "armored": "0.75", "structure": "0.75", "construction": "0.75" },
+				"acid":  { "light": "0.75", "armored": "1.5",  "structure": "1.25", "construction": "2.5" },
+				"shock": { "light": "1.5",  "armored": "1.0",  "structure": "0.75", "construction": "1.75" }
 			},
 			"capsule_time": "3.0",
 			"capsule_hp": 80,

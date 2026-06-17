@@ -5,17 +5,18 @@ extends Node3D
 ## ticks; it influences the sim exclusively by scheduling SimCommands.
 
 const TICK_DT := 1.0 / Sim.TICK_RATE
-const MAP_PATH := "res://maps/dev_arena.json"
+## M4 ships the 1v1 clash map (human vs bot); dev_arena.json stays the Hive
+## sandbox. Swap this back for the single-player sandbox.
+const MAP_PATH := "res://maps/dev_clash.json"
 const SIM_SEED := 0xC0FFEE
 
 ## Engine verbs the sim understands. The catalog binds buttons/taps to
 ## command ids; this table is the engine implementing those verbs, not a
-## button binding (see design.md "UI as Data"). Verbs the sim can't express
-## yet degrade gracefully: patrol/mine move (M3/M4), hold stops.
+## button binding (see design.md "UI as Data").
 const VERB_KIND := {
 	"move": SimCommand.Kind.MOVE,
-	"patrol": SimCommand.Kind.MOVE,
-	"mine": SimCommand.Kind.MOVE,
+	"patrol": SimCommand.Kind.PATROL,
+	"mine": SimCommand.Kind.MINE,
 	"attack": SimCommand.Kind.ATTACK_MOVE,
 	"attack_move": SimCommand.Kind.ATTACK_MOVE,
 	"stop": SimCommand.Kind.STOP,
@@ -37,6 +38,12 @@ var viewport_placement: ViewportPlacement
 ## The sim's origin is the map corner; the view keeps the map centered.
 var world_offset := 32.0
 
+## Bot command sources for the AI player slots (design_m4.md §8).
+var bots: Array[BotCommander] = []
+var _result_layer: CanvasLayer
+var _result_label: Label
+var _result_shown := false
+
 var _accumulator := 0.0
 var _cmd_seq := 0
 ## entity id -> UnitView, plus per-id previous/current sim positions for
@@ -56,8 +63,39 @@ func _ready() -> void:
 			push_error("map: %s" % e)
 		return
 	world_offset = map.tiles_w / 2.0
+	_show_faction_select()
+
+
+## Pre-match faction picker (design_m4.md §13). The sim is not built until the
+## player confirms; until then `sim` is null and `_process` idles.
+func _show_faction_select() -> void:
+	var slots: Array = []
+	var ids: Array[int] = []
+	for p: Dictionary in map.players:
+		ids.append(int(p["id"]))
+	ids.sort()
+	for pid in ids:
+		slots.append({"player": pid, "faction": _faction_name(pid)})
+	var fs := FactionSelect.new()
+	add_child(fs)
+	fs.setup(slots, LOCAL_PLAYER)
+	fs.confirmed.connect(_start_match)
+
+
+## Build the match from the chosen factions and assemble the HUD/view. This is
+## the body that used to run straight from `_ready`, now deferred behind the
+## faction picker.
+func _start_match(factions: Dictionary) -> void:
+	MatchSetup.apply(map, factions)
+	if not map.ok():
+		for e in map.errors:
+			push_error("match setup: %s" % e)
+		return
 	sim = Sim.new(SIM_SEED, map.catalog, map)
-	catalog = UICatalog.load_default()
+	# Faction-aware UI: the local player's faction picks the UI layer (the
+	# "UI as data" dividend — the Rebels get Crew, the mine order, worker
+	# dials, the draw-wall verb; design_m4.md §13.2).
+	catalog = _load_ui_for_faction(_faction_name(LOCAL_PLAYER))
 	if catalog == null:
 		push_error("UI catalog failed to load; controls disabled")
 		return
@@ -93,7 +131,7 @@ func _ready() -> void:
 	viewport_placement.local_player = LOCAL_PLAYER
 	viewport_placement.world_offset = world_offset
 	viewport_placement.ghost_parent = self
-	viewport_placement.place_confirmed.connect(_on_place_confirmed)
+	viewport_placement.plan_committed.connect(_on_plan_committed)
 	hud.add_child(viewport_placement)
 	hud.extra_occluders.append(viewport_placement)
 
@@ -118,7 +156,11 @@ func _ready() -> void:
 	controller.selection_changed.connect(_on_selection_changed)
 	controller.order_issued.connect(_on_order_issued)
 
-	controller.placement_tap = viewport_placement.handle_tap
+	controller.placement_active = viewport_placement.is_active
+	controller.placement_press = viewport_placement.press
+	controller.placement_drag = viewport_placement.drag
+	controller.placement_release = viewport_placement.release
+	controller.placement_abort = viewport_placement.abort_gesture
 	controller.long_pressed.connect(_on_ground_long_pressed)
 	hud.control_button.deselect_all_requested.connect(controller.deselect_all)
 	hud.control_button.new_group_requested.connect(_on_new_group_from_selection)
@@ -136,16 +178,110 @@ func _ready() -> void:
 	territory.world_offset = world_offset
 	add_child(territory)
 
+	_setup_bots()
+	_setup_result_overlay()
 	_sync_views()
 
 
 func _process(delta: float) -> void:
+	if sim == null:
+		return # waiting on the faction picker; no match yet
 	_accumulator += minf(delta, 0.25) # clamp away hitches/debugger pauses
 	while _accumulator >= TICK_DT:
+		for bot in bots:
+			bot.tick()
 		sim.step()
 		_capture_tick()
 		_accumulator -= TICK_DT
 	_interpolate_views(_accumulator / TICK_DT)
+	_check_match_over()
+
+
+# --- match: bots and the result screen (design_m4.md §7.3, §8) ----------------
+
+
+## Every non-local, non-neutral player slot is driven by a BotCommander — the
+## identical command pipeline a human uses (design.md "a bot is a command
+## source"). Each is handed the others' main-structure positions to scout.
+func _setup_bots() -> void:
+	var mains := {}
+	for id in sim._sorted_ids():
+		var e: SimEntity = sim.entities[id]
+		if e.kind == SimEntity.Kind.STRUCTURE \
+				and sim.catalog.sim_of(e.type_key).get("is_main", false):
+			mains[e.player] = [e.x, e.y]
+	for pid in sim.players:
+		if pid == 0 or pid == LOCAL_PLAYER:
+			continue
+		var bot := BotCommander.new(sim, pid, SIM_SEED ^ (pid * 0x9E3779B1))
+		for mp in mains:
+			if mp != pid:
+				bot.scout_hints.append(mains[mp])
+		bots.append(bot)
+
+
+func _setup_result_overlay() -> void:
+	_result_layer = CanvasLayer.new()
+	_result_layer.layer = 64
+	add_child(_result_layer)
+	# A full-screen dim that also swallows input, so once the match is over the
+	# map no longer takes orders (the prior build had no end state — it read as
+	# a freeze). The console still works behind it only via its own layer.
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_result_layer.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_result_layer.add_child(center)
+	var panel := PanelContainer.new()
+	center.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 16)
+	panel.add_child(box)
+	_result_label = Label.new()
+	_result_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_result_label.add_theme_font_size_override("font_size", 40)
+	box.add_child(_result_label)
+	var rematch := Button.new()
+	rematch.text = "Rematch"
+	rematch.custom_minimum_size.y = 56
+	rematch.pressed.connect(func() -> void: get_tree().reload_current_scene())
+	box.add_child(rematch)
+	var quit := Button.new()
+	quit.text = "Exit"
+	quit.custom_minimum_size.y = 56
+	quit.pressed.connect(func() -> void: get_tree().quit())
+	box.add_child(quit)
+	_result_layer.visible = false
+
+
+func _check_match_over() -> void:
+	if _result_shown:
+		return
+	var res: Dictionary = sim.match_result()
+	if not res["over"]:
+		return
+	_result_shown = true
+	var won: bool = res["winner"] == LOCAL_PLAYER
+	_result_label.text = "VICTORY" if won else "DEFEAT"
+	_result_label.modulate = Color(0.6, 1, 0.6) if won else Color(1, 0.5, 0.5)
+	_result_layer.visible = true
+
+
+func _faction_name(pid: int) -> String:
+	for p: Dictionary in map.players:
+		if p["id"] == pid:
+			return str(p["faction"])
+	return ""
+
+
+func _load_ui_for_faction(faction: String) -> UICatalog:
+	var rebel_layer := "res://data/ui/%s_ui.json" % faction
+	if faction != "" and FileAccess.file_exists(rebel_layer):
+		return UICatalog.load_layers(["res://data/ui/default_ui.json", rebel_layer])
+	return UICatalog.load_default()
 
 
 ## Create views for sim entities that don't have one yet (map spawns at
@@ -192,12 +328,13 @@ func _capture_tick() -> void:
 			continue
 		_prev[id] = _cur[id]
 		_cur[id] = _sim_to_view(e)
-		# Two-state fog: own entities and resource nodes always render;
-		# other players' dynamic entities hide under fog (§4.4).
+		# Knowledge-gated rendering (design_m4.md §6): own entities and the
+		# always-known resource nodes render; enemy entities show only when
+		# the sim says we can legitimately see them — aerial capsules over
+		# walls (radius-only) and ground units in unoccluded vision.
 		var view: UnitView = _views[id]
 		view.visible = e.player == LOCAL_PLAYER or e.is_resource() \
-				or sim.is_tile_visible(LOCAL_PLAYER,
-						Fixed.to_int(e.x), Fixed.to_int(e.y))
+				or sim.is_entity_visible(LOCAL_PLAYER, e)
 		view.sync_state(e, capsule_time)
 
 
@@ -358,6 +495,13 @@ func _on_order_issued(command_id: String, units: Array[UnitView],
 		var kind: SimCommand.Kind = VERB_KIND.get(command_id, SimCommand.Kind.MOVE)
 		if kind == SimCommand.Kind.STOP:
 			_issue_command(kind, ids, {})
+		elif kind == SimCommand.Kind.MINE:
+			# The Rebel Mine order needs the tapped resource node (§12).
+			if target != null and target.entity_id > 0:
+				params["node"] = target.entity_id
+				_issue_command(kind, ids, params)
+			else:
+				_issue_command(SimCommand.Kind.MOVE, ids, params)
 		else:
 			# Holding the control modifier queues the order (append) instead of
 			# replacing the unit's current orders — see Sim._order_move.
@@ -398,4 +542,32 @@ func _on_place_confirmed(type_key: int, cx: int, cy: int) -> void:
 			{"type": type_key, "cx": cx, "cy": cy})
 	hud.set_status("building %s" % ctx.label_of(type_key))
 	# Single-build returns the console to the tab root; continuous re-arms.
+	hud.console.notify_build_committed()
+
+
+## The viewport planner confirmed a whole plan (design_m4.md §4.4): one BUILD
+## per queued building, and one player-scoped BUILD_WALL for the drawn cells.
+## Each building resolves its own builder; the wall plan picks its own workers.
+func _on_plan_committed(structures: Array, wall_cells: PackedInt32Array,
+		wall_type: int) -> void:
+	var built := 0
+	for s: Dictionary in structures:
+		var type: int = s["type"]
+		var builder := sim.builder_for(LOCAL_PLAYER, type)
+		if builder == 0:
+			continue
+		_issue_command(SimCommand.Kind.BUILD, [builder],
+				{"type": type, "cx": s["cx"], "cy": s["cy"]})
+		built += 1
+	if wall_type >= 0 and not wall_cells.is_empty():
+		var cells: Array = []
+		for c in wall_cells:
+			cells.append(c)
+		_issue_command(SimCommand.Kind.BUILD_WALL, [],
+				{"type": wall_type, "cells": cells})
+		hud.set_status("drawing %d wall segments" % cells.size())
+	elif built > 0:
+		hud.set_status("building %d" % built)
+	else:
+		hud.set_status("nothing could be placed there")
 	hud.console.notify_build_committed()

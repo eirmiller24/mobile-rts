@@ -12,7 +12,7 @@ extends SceneTree
 ## SimHash of the synthetic catalog in _hash_layer(). If this changes, the
 ## compiled representation changed: bump deliberately, never casually —
 ## peers with different compiled forms desync at tick 0.
-const GOLDEN_HASH := 0xA037DC5D
+const GOLDEN_HASH := 0xC4F85900
 
 var failures := 0
 
@@ -20,6 +20,7 @@ var failures := 0
 func _initialize() -> void:
 	_check_from_decimal()
 	_check_real_catalog()
+	_check_rebels_catalog()
 	_check_errors()
 	_check_layers_and_hash()
 
@@ -128,6 +129,62 @@ func _check_real_catalog() -> void:
 	_expect(carapace_root["morphed"]["damage"] == 25, "rooted damage override")
 	_expect(carapace_root["morphed"]["speed"] == 0, "rooted speed override")
 	_expect(carapace_root["morphed"]["hits_air"] == true, "rooted hits_air override")
+
+
+# --- the M4 three-layer (Rebel) catalog ---------------------------------------
+
+
+func _check_rebels_catalog() -> void:
+	var cat := CatalogCompiler.compile_paths([
+		"res://data/catalog/core.json", "res://data/catalog/hive.json",
+		"res://data/catalog/rebels.json"])
+	for e in cat.errors:
+		_fail("rebels catalog: %s" % e)
+	if not cat.ok():
+		return
+
+	# The new construction armor class and its anti-construction column (§4.3).
+	var construction := cat.armor_classes.find("construction")
+	_expect(construction == 3, "construction armor class should be index 3")
+	var acid := cat.attack_classes.find("acid")
+	var shock := cat.attack_classes.find("shock")
+	_expect(cat.class_mul(acid, construction) == Fixed.ONE * 5 / 2,
+			"acid vs construction = 2.5")
+	_expect(cat.class_mul(shock, construction) == Fixed.ONE * 7 / 4,
+			"shock vs construction = 1.75")
+
+	# Worker harvest/build fields and the worker_build ability.
+	var worker := cat.sim_of(cat.key_of("rebels.worker"))
+	_expect(worker["carry_capacity"] == 10, "worker carry_capacity")
+	_expect(worker["harvest_rate"] == 2 * Fixed.ONE, "worker harvest_rate")
+	var wbuild := cat.sim_of(cat.key_of("rebels.worker_build"))
+	_expect(wbuild["mechanic"] == CatalogSchema.BuildMechanic.WORKER, "worker build mechanic")
+	_expect(wbuild["structures"].size() == 4, "worker_build sells 4 structures")
+
+	# Structure role flags (§7.1, §3, §6.5).
+	var hq := cat.sim_of(cat.key_of("rebels.headquarters"))
+	_expect(hq["is_depot"] and hq["is_main"], "HQ is depot and main")
+	_expect(hq["bandwidth_provided"] == 10, "HQ provides starting Crew")
+	# Rebels have NO feral penalty: default damage_taken stays 1.0 (§2.1).
+	_expect(hq["damage_taken"] == Fixed.ONE, "Rebel HQ has no feral penalty")
+	var refinery := cat.sim_of(cat.key_of("rebels.refinery"))
+	_expect(refinery["is_refinery"] and not refinery["is_depot"],
+			"Refinery is a source, not a depot")
+	var barricade := cat.sim_of(cat.key_of("rebels.barricade"))
+	_expect(barricade["los_height"] == 2, "Barricade stands 2 LOS levels")
+	_expect(barricade["foot_w"] == 1 and barricade["foot_h"] == 1,
+			"Barricade is a 1x1 pathing-cell footprint")
+
+	# Capsule detection and the ground-only Marauder (§2.1, §6.3).
+	_expect(cat.sim_of(cat.key_of("rebels.watcher"))["detects_capsules"],
+			"Watcher detects capsules")
+	_expect(not cat.sim_of(cat.key_of("rebels.marauder"))["hits_air"],
+			"Marauder is ground-only")
+
+	# New M4 globals compiled from core.classes.
+	_expect(cat.globals["max_builders"] == 3, "max_builders global")
+	_expect(cat.globals["build_rate"] == 20 * Fixed.ONE, "build_rate global")
+	_expect(cat.globals["refinery_radius"] == 8 * Fixed.ONE, "refinery_radius global")
 
 
 # --- schema validation errors -------------------------------------------------

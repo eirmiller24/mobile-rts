@@ -15,6 +15,7 @@ const MAP_TILES := 32
 
 
 const M3_TICKS := 800
+const M4_TICKS := 1000
 
 var failures := 0
 
@@ -37,14 +38,80 @@ func _initialize() -> void:
 		failures += 1
 
 	_check_m3()
+	_check_m4()
 
 	if failures == 0:
-		print("determinism_check: OK (%d ticks, %d/12 units survived; M3 scenario %d ticks)"
-				% [TICKS, a["units_alive"], M3_TICKS])
+		print("determinism_check: OK (%d ticks, %d/12 units survived; M3 %d ticks; M4 %d ticks)"
+				% [TICKS, a["units_alive"], M3_TICKS, M4_TICKS])
 		quit(0)
 	else:
 		print("determinism_check: FAILED")
 		quit(1)
+
+
+## The M4 scenario (design_m4.md §16): two factions on the 1v1 map, both
+## economies running (Hive nanos + Rebel worker fleet), each driven by a
+## seeded BotCommander (its commands enter the stream), played out — run
+## twice from the same seed must produce identical hash streams. This is the
+## canary for a new M4 field that was added to state but not to hash_into().
+func _check_m4() -> void:
+	var a := _run_m4()
+	var b := _run_m4()
+	for i in M4_TICKS:
+		if a["hashes"][i] != b["hashes"][i]:
+			push_error("M4 desync at tick %d: %d != %d"
+					% [i, a["hashes"][i], b["hashes"][i]])
+			failures += 1
+			break
+	if not a["harvested"]:
+		push_error("M4: the Rebel workers never harvested")
+		failures += 1
+	if not a["produced"]:
+		push_error("M4: a bot never trained a unit (production not exercised)")
+		failures += 1
+
+
+func _run_m4() -> Dictionary:
+	var map := MapLoader.load_path("res://maps/dev_clash.json")
+	assert(map.ok(), "dev_clash: %s" % [map.errors])
+	# The clash map is faction-agnostic now (resources + start anchors); spawn
+	# the canonical Hive-vs-Rebels loadouts before constructing the sim.
+	MatchSetup.apply(map, MatchSetup.default_factions(map))
+	assert(map.ok(), "match setup: %s" % [map.errors])
+	var sim := Sim.new(SEED, map.catalog, map)
+	var hive := _bot(sim, 1)
+	var rebels := _bot(sim, 2)
+	hive.scout_hints = [_main_pos(sim, 2)]
+	rebels.scout_hints = [_main_pos(sim, 1)]
+	var start_units := sim.entities.size()
+	var hashes: Array[int] = []
+	var harvested := false
+	var produced := false
+	for _i in M4_TICKS:
+		hive.tick()
+		rebels.tick()
+		sim.step()
+		hashes.append(sim.state_hash())
+		for id in sim.entities:
+			var e: SimEntity = sim.entities[id]
+			if e.is_unit() and e.harvest_state == SimEntity.HarvestState.HARVESTING:
+				harvested = true
+		if sim.entities.size() > start_units:
+			produced = true
+	return {"hashes": hashes, "harvested": harvested, "produced": produced}
+
+
+func _bot(sim: Sim, pid: int) -> BotCommander:
+	return BotCommander.new(sim, pid, 0x5EED + pid)
+
+
+func _main_pos(sim: Sim, pid: int) -> Array:
+	for id in sim._sorted_ids():
+		var e: SimEntity = sim.entities[id]
+		if e.player == pid and e.kind == SimEntity.Kind.STRUCTURE \
+				and sim.catalog.sim_of(e.type_key).get("is_main", false):
+			return [e.x, e.y]
+	return [0, 0]
 
 
 ## The M3 scenario (design_m3.md §8): real catalog and map — economy,

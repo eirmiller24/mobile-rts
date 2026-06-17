@@ -34,9 +34,17 @@ var hud: Hud
 var catalog: UICatalog
 ## Sticky by default (matches ReselectButton); the corner button toggles it.
 var auto_deselect := false
-## When valid and returning true, an armed placement mode consumed the
-## tap (func(world_pos: Vector3) -> bool) — checked before selection.
-var placement_tap := Callable()
+## Armed in-viewport build planner. When `placement_active` returns true the
+## whole single-finger gesture (press/drag/release) drives placement instead of
+## selection — drag-to-position a ghost, stroke a wall, drop into the plan.
+## func() -> bool / func(world, control) / func(world) / func(world).
+var placement_active := Callable()
+var placement_press := Callable()
+var placement_drag := Callable()
+var placement_release := Callable()
+## func() — drop the in-progress gesture (e.g. a second finger interrupts a
+## wall stroke) without committing or clearing the pending plan.
+var placement_abort := Callable()
 
 var selection: Array[UnitView] = []
 var last_group: Array[UnitView] = []
@@ -47,6 +55,8 @@ var _active_index := -1
 var _path := PackedVector2Array()
 var _moved := false
 var _cancelled := false
+## This gesture is driving the build planner (placement was armed at press).
+var _placing := false
 var _touch_count := 0
 var _press_held := 0.0
 ## Wall-clock of the last unit tap (view-side; not sim state) for double-tap.
@@ -55,7 +65,7 @@ var _last_tap_pos := Vector2.ZERO
 
 
 func _process(delta: float) -> void:
-	if _active_index == -1 or _moved or _cancelled:
+	if _active_index == -1 or _moved or _cancelled or _placing:
 		return
 	_press_held += delta
 	if _press_held >= LONG_PRESS_TIME and selection.is_empty():
@@ -74,15 +84,25 @@ func _unhandled_input(event: InputEvent) -> void:
 				_moved = false
 				_cancelled = false
 				_press_held = 0.0
+				_placing = _placement_armed()
+				if _placing:
+					placement_press.call(_ground_point(event.position),
+							hud.control_held())
 			else:
 				# Second finger = camera gesture; abandon selection gesture.
 				_cancelled = true
+				if _placing and placement_abort.is_valid():
+					placement_abort.call()
 				hud.lasso_overlay.set_points(PackedVector2Array())
 		else:
 			_touch_count = maxi(0, _touch_count - 1)
 			if event.index == _active_index:
-				if not _cancelled:
+				if _placing:
+					if not _cancelled:
+						placement_release.call(_ground_point(event.position))
+				elif not _cancelled:
 					_finish(event.position)
+				_placing = false
 				_active_index = -1
 				hud.lasso_overlay.set_points(PackedVector2Array())
 	elif event is InputEventScreenDrag \
@@ -91,7 +111,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not _moved \
 				and event.position.distance_to(_path[0]) > TAP_MOVE_THRESHOLD:
 			_moved = true
-		if _moved:
+		if _placing:
+			placement_drag.call(_ground_point(event.position))
+		elif _moved:
 			hud.lasso_overlay.set_points(_path)
 
 
@@ -118,6 +140,10 @@ func reselect() -> void:
 		_select(alive)
 
 
+func _placement_armed() -> bool:
+	return placement_active.is_valid() and placement_active.call()
+
+
 func _finish(pos: Vector2) -> void:
 	if _moved:
 		_lasso()
@@ -126,8 +152,8 @@ func _finish(pos: Vector2) -> void:
 
 
 func _tap(pos: Vector2) -> void:
-	if placement_tap.is_valid() and placement_tap.call(_ground_point(pos)):
-		return # structure placement owns viewport taps while armed
+	# Armed placement consumes the whole gesture upstream (see `_placing`), so a
+	# tap that reaches here is always selection/orders.
 	var unit := _pick_unit(pos)
 	# The held control modifier turns "replace the selection" into "add/remove"
 	# and "issue an order" into "queue an order" (design.md "The control button").

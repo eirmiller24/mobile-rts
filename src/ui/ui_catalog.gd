@@ -50,7 +50,8 @@ class WidgetDef:
 
 
 const WIDGET_TYPES := ["button", "label", "structure_grid", "unit_grid",
-		"queue_strip", "alloc_sliders", "minimap", "group_roster"]
+		"queue_strip", "alloc_sliders", "minimap", "group_roster",
+		"worker_dials", "stance_picker"]
 
 
 ## command id -> CommandDef
@@ -73,16 +74,40 @@ static func load_default() -> UICatalog:
 	return load_from_json("res://data/ui/default_ui.json")
 
 
-static func load_from_json(path: String) -> UICatalog:
-	var text := FileAccess.get_file_as_string(path)
-	if text.is_empty():
-		push_error("UICatalog: cannot read %s" % path)
-		return null
-	var data: Variant = JSON.parse_string(text)
-	if data == null or typeof(data) != TYPE_DICTIONARY:
-		push_error("UICatalog: %s is not valid JSON" % path)
-		return null
+## Faction/map override (design.md "UI as Data", design_m4.md §13.2): later
+## layers patch earlier ones per leaf key, the same merge the object catalog
+## uses. The Rebel UI is `[default_ui.json, rebels_ui.json]`.
+static func load_layers(paths: Array) -> UICatalog:
+	var merged := {}
+	for path: String in paths:
+		var text := FileAccess.get_file_as_string(path)
+		if text.is_empty():
+			push_error("UICatalog: cannot read %s" % path)
+			return null
+		var data: Variant = JSON.parse_string(text)
+		if data == null or typeof(data) != TYPE_DICTIONARY:
+			push_error("UICatalog: %s is not valid JSON" % path)
+			return null
+		_deep_merge(merged, data)
+	return _build(merged)
 
+
+## Merge b into a per leaf key: nested dicts recurse, everything else
+## (including arrays — a layer replaces a whole list) overwrites.
+static func _deep_merge(a: Dictionary, b: Dictionary) -> void:
+	for k: Variant in b:
+		if a.has(k) and typeof(a[k]) == TYPE_DICTIONARY \
+				and typeof(b[k]) == TYPE_DICTIONARY:
+			_deep_merge(a[k], b[k])
+		else:
+			a[k] = b[k]
+
+
+static func load_from_json(path: String) -> UICatalog:
+	return load_layers([path])
+
+
+static func _build(data: Dictionary) -> UICatalog:
 	var catalog := UICatalog.new()
 	for id in data.get("commands", {}):
 		var raw: Dictionary = data["commands"][id]

@@ -10,6 +10,8 @@ const WALL := "t.wall"
 const ROCK := "t.rock"
 const HUB := "t.hub"
 const NODE := "t.node"
+const WORKER := "t.worker"
+const DEPOT := "t.depot"
 
 
 static func layer() -> Dictionary:
@@ -69,6 +71,21 @@ static func layer() -> Dictionary:
 			"kind": "resource",
 			"sim": { "resource": "alloy", "amount": 100000, "throughput": "5.0",
 				"foot_w": 2, "foot_h": 2 }
+		},
+		# M4 worker-fleet fixtures (the perf check's second, Rebel economy).
+		WORKER: {
+			"kind": "unit",
+			"sim": {
+				"hp": 60, "armor_class": "light", "radius": "0.4", "speed": "3.0",
+				"sight": "7.0", "carry_capacity": 10, "harvest_rate": "2.0"
+			}
+		},
+		DEPOT: {
+			"kind": "structure",
+			"sim": {
+				"hp": 800, "foot_w": 4, "foot_h": 4, "armor_class": "structure",
+				"build_time": "1.0", "sight": "10.0", "is_depot": true
+			}
 		},
 	}
 
