@@ -48,10 +48,11 @@ func _ready() -> void:
 	lasso_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(lasso_overlay)
 
-	# Right-edge command controls (move / abilities / control). They sit at
-	# fixed screen fractions rather than in a centered stack, so the thumb
-	# finds each in the same place on any window size; with three controls
-	# that lands them on 25% / 50% / 75% of the height.
+	# Right-edge command buttons (move / abilities). They sit at fixed screen
+	# fractions rather than a centered stack, so the thumb finds each in the
+	# same place on any window size; with the two command buttons that lands
+	# them on 1/3 and 2/3 of the height (even spacing now that the control
+	# modifier lives in the bottom-left corner instead of stacking with them).
 	var right_controls: Array[Control] = []
 	for def in catalog.side_buttons:
 		var btn := RadialButton.new()
@@ -60,14 +61,17 @@ func _ready() -> void:
 		add_child(btn)
 		buttons.append(btn)
 		right_controls.append(btn)
+	for i in right_controls.size():
+		_pin_right(right_controls[i], float(i + 1) / float(right_controls.size() + 1))
 	# The held control modifier always exists (its mechanics are engine code,
-	# not catalog bindings); it occupies the slot the designation button used to.
+	# not catalog bindings). It lives in the bottom-left corner so the player
+	# can hold it with the left thumb while the right thumb works the move /
+	# attack buttons — e.g. ctrl+move to queue a waypoint, which is awkward
+	# when both live on the same edge (design.md "The control button").
 	control_button = ControlButton.new()
 	control_button.setup()
 	add_child(control_button)
-	right_controls.append(control_button)
-	for i in right_controls.size():
-		_pin_right(right_controls[i], float(i + 1) / float(right_controls.size() + 1))
+	_pin_bottom_left(control_button)
 
 	status_label = Label.new()
 	status_label.set_anchors_preset(Control.PRESET_TOP_LEFT)
@@ -178,6 +182,24 @@ func _pin_right(c: Control, frac: float) -> void:
 	c.offset_left = -16.0 - sz.x
 	c.offset_top = -sz.y / 2.0
 	c.offset_bottom = sz.y / 2.0
+
+
+## Pin a control to the bottom-left corner. It is lifted just enough that the
+## button's lower radial petal (the deselect-all swipe target, which sits
+## PETAL_OFFSET below center) stays on screen and tappable.
+func _pin_bottom_left(c: Control) -> void:
+	var sz := c.custom_minimum_size
+	c.size = sz
+	var lift := ControlButton.PETAL_OFFSET + ControlButton.PETAL_RADIUS \
+			- sz.y / 2.0 + 12.0
+	c.anchor_left = 0.0
+	c.anchor_right = 0.0
+	c.anchor_top = 1.0
+	c.anchor_bottom = 1.0
+	c.offset_left = 16.0
+	c.offset_right = 16.0 + sz.x
+	c.offset_bottom = -lift
+	c.offset_top = -lift - sz.y
 
 
 func set_status(text: String) -> void:

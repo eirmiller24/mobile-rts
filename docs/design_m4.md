@@ -98,11 +98,12 @@ M4 is done when, on a phone:
    borrowed from the other's rules.
 2. **Rebels play the Rebel way:** workers harvest Alloy by hand into the HQ,
    take Flux slowly by mining a vent directly or fast through a vent-pooling
-   Refinery; the Economy tab's intent dials (worker target, alloy/flux and
-   build/mine ratios, auto-repair) keep the fleet on task and auto-replace
-   losses; structures are raised by a worker that walks to the site, and a
-   drawn stroke raises a Barricade wall segment by segment; Crew caps the
-   army; vision is extended around units and structures.
+   Refinery; the Economy tab's worker slider (target headcount, the Alloy/Flux
+   split, the per-side build/repair draft, auto-repair) keeps the fleet on task
+   and auto-replaces losses, while any worker can still be pulled out by hand to
+   scout, fight, or escort an expansion; structures are raised by a worker that
+   walks to the site, and a drawn stroke raises a Barricade wall segment by
+   segment; Crew caps the army; vision is extended around units and structures.
 3. **The Hive still plays the Hive way** — every M3 behavior intact, proven
    by the M3 tests still passing.
 4. A Rebel Demolisher kills a Hive capsule/nest under construction
@@ -274,73 +275,134 @@ loop one-depot-simple.)
 
 ### 3.2 The Economy tab as worker intent (macro layer)
 
+*(Revised post-playtest, 2026-06-17. This supersedes the original "intent
+dials, no per-unit pin" model: on device it made workers impossible to command
+individually — you could not keep one idle, walk one to a fresh site, or fold
+one into an army, because the reconcile re-tasked every worker every tick. The
+model below keeps a macro control but makes it a **window onto per-worker
+state**, and lets any worker drop out of the economy to be commanded as an
+ordinary unit. Tracked in §18.)*
+
 design.md: for the Rebels the Economy tab is "assigning worker counts per
-resource and approving auto-replacement of lost workers." M4 refines that
-into a small set of **intent dials** the player sets and the sim
-continuously approximates — the Rebel analog of the Hive's nano sliders, and,
-like nano allocation, **sim-side** so the approximation runs identically on
-every lockstep peer. The player sets a target *distribution*, not a roster;
-"whatever is the closest approximation of what you asked for" is the sim's
-job, every tick.
+resource and approving auto-replacement of lost workers." The truth is
+**per-worker, not per-player**: every worker is in exactly one **work state**,
+and the Economy control is a *window* that counts those states — it stores no
+ratio the sim chases. Like everything in `src/sim/` it is hashed and runs
+identically on every lockstep peer.
 
-Per player, the Economy tab authors four values (a `SET_ECONOMY` command,
-§12, emitted on slider release):
+**The five worker states** (`work_state`, hashed; replaces `harvest_role` and
+subsumes the "is this worker under macro control" question):
 
-- **`worker_target`** (int) — desired total worker headcount. The sim trains
-  toward it and **auto-replaces losses**: whenever live+queued workers fall
-  below the target, the lowest-id HQ with queue headroom queues a Worker,
-  paying Alloy and Crew at queue time (the normal TRAIN reservation, M3
-  §4.7), skipping silently when unaffordable or Crew-capped. This is the "set
-  it and forget it" promise — a raided mineral line refills itself. (No
-  spending guardrail; we trust the dial — §18.)
-- **`alloy_flux_ratio`** (fixed 0..1) — how the *harvesting* pool splits
-  between Alloy and Flux.
-- **`build_mine_ratio`** (fixed 0..1) — how the *whole* pool splits between a
-  **build/repair reserve** and the harvesting pool.
-- **`auto_repair`** (bool) — whether idle build-reserve workers seek the
-  nearest damaged own structure and repair it (§4.2).
+| State | In auto pool? | Behavior |
+|---|---|---|
+| `ALLOY` | yes | mines Alloy |
+| `ALLOY_BUILD` | yes | mines Alloy, **draftable** to build/wall/repair |
+| `FLUX` | yes | mines Flux |
+| `FLUX_BUILD` | yes | mines Flux, **draftable** |
+| `MANUAL` | no | an ordinary unit — idles, scouts, fights; the economy ignores it |
 
-Each economy tick (ascending player id) the sim turns the dials into target
-counts and reconciles actual tasks toward them:
+A `_BUILD` worker oscillates mine↔build *without changing state*: it mines
+until construction needs a body, builds, and returns to mining. "Available to
+build" means "drops tools when there's work," never an idle reserve.
 
-1. From the live worker count and `build_mine_ratio`, compute the **build
-   reserve** size; the remainder is the **harvest pool**, split by
-   `alloy_flux_ratio` into desired Alloy and Flux harvester counts (round
-   half-up — deterministic).
-2. Reassign the **nearest free** workers (idle first, then over-supplied
-   categories, taking the highest-id worker so assignment is stable; ties by
-   id) until actual counts match desired — workers flow between Alloy
-   sources, Flux sources (Refineries preferred over raw vents when both are
-   in range, §3.1), and the build reserve. A worker mid-carry finishes its
-   deposit before being reassigned (it never drops banked-but-uncarried
-   resource — §3.1).
-3. The build reserve waits available near base; when a `BUILD` / `REPAIR` /
-   wall order (§4) needs a builder it is drawn from this reserve —
-   **nearest reserve worker first**, then, if the reserve is empty, the
-   nearest harvester (and `build_mine_ratio` ticks up to reflect that the
-   player asked for more building than the dial reserved). **This is the
-   answer to "where does the builder come from": the build/mine dial *is* the
-   pre-committed builder pool, and an explicit order overdraws it gracefully
-   rather than stalling construction.**
+**Economy orders keep a worker in the pool; unit orders eject it.** This one
+rule is what makes the split feel right:
 
-**Manual orders adjust the dials, they don't fight them.** Unlike the Hive
-(where a manually-ordered unit is *pinned* out of macro), a Rebel worker has
-no per-unit pin — the dials are the whole truth, so a hand order **feeds back
-into the intent** instead of escaping it:
+- **`MINE` / `BUILD` / `REPAIR`** are *economy* orders — they set a worker's
+  mining side or draft it for construction *without* leaving the pool (a
+  `MANUAL` worker so ordered **re-enlists**). `BUILD`/`REPAIR` set the
+  transient `build_target`; `work_state` is untouched, so the worker resumes
+  its prior job when done.
+- **`MOVE` / `ATTACK` / `PATROL` / hold / `STOP`** are *unit* orders — they
+  flip the worker to `MANUAL`. It leaves the pool and stays out (the slider
+  redraws over a smaller pool) until you put it back to work. Re-enlist
+  explicitly: a `MINE` onto a node, an order onto an own depot/HQ (joins the
+  lower-staffed mining side), or a "return to work" control.
 
-- Manually `MINE`-ordering workers onto Alloy or Flux nudges
-  `alloy_flux_ratio` toward that resource by the ordered workers' share (and
-  biases node selection toward the tapped node while it lasts).
-- Manually ordering a `BUILD` / `REPAIR` / wall nudges `build_mine_ratio` up
-  enough to cover the builders it consumes.
+So a worker you walk into an army is yours until you send it home, and tapping
+a worker onto a vent *is* moving the slider — the viewport and the tab edit the
+same per-worker truth at two altitudes, neither lying to the other.
 
-So the viewport and the tab are the same control at two altitudes: tapping
-individual workers *is* editing the sliders, by hand and locally. (How far a
-one-off manual order should move a dial — and whether the dial relaxes back
-when the task ends — is a feel question for the tuning pass, §18.) Keeping
-the whole thing dial-driven is what lets auto-replace and reconcile stay
-**sim-side and identical on every peer**, while the tab crosses the boundary
-only at human frequency (one `SET_ECONOMY` on slider release).
+**The control: one slider, three handles, in whole workers.** The Rebel
+Economy widget (§13.2) is a single bar over the **auto pool** (the non-`MANUAL`
+workers), snapping to the pool's count — N auto workers ⇒ N+1 discrete stops —
+so the abstraction reads as bodies. Three handles cut it into four regions:
+
+```
+[ alloy+build | alloy ‖ flux | flux+build ]
+     └ left ┘  center(‖)  └ right ┘
+```
+
+- The **center handle** (the large one) is the **Alloy ◂▸ Flux split**.
+- Each **side handle** starts at its edge and marks, in whole workers, how many
+  of that side are build-draftable (the region between the edge and the
+  handle). **These counts are discrete and sticky:** set Alloy-build to 2 and
+  it stays 2 as you slide the center handle to add Alloy miners — the only
+  ceiling is that side's own worker count (it clamps if the side shrinks below
+  it). Drag a side handle all the way to the center and the whole side is
+  draftable ("everyone drops tools if there's building to do").
+- When the center and a side handle coincide, the **center handle wins** the
+  touch (a UI hit-test rule, §13.2).
+
+**Population changes move the window, they don't fight it.** Because the states
+live on the workers, the bar just reflects them:
+
+- A worker **killed or pulled to `MANUAL`** leaves its state; the bar redraws
+  one stop shorter. Nothing is restored to "hold the ratio."
+- A worker **auto-replaced** under `worker_target` re-enters **the dead
+  worker's state** (the player keeps a small FIFO of states from auto-pool
+  deaths; the replacement train pops it), so a raided Flux line refills as Flux.
+- A worker **trained fresh** (target raised, or hand-trained — no death behind
+  it) enters the **mining side with fewer workers**, build-unavailable
+  (deterministic; Alloy on a tie).
+
+**Sim representation.** Per worker: `work_state` (the enum above). Per player,
+the only economy dials left are **`worker_target`** (int — the "keep N workers"
+headcount the auto-replace maintains: **seeded from the workers a base starts
+with** and **raised by one whenever the player trains a worker** (auto-replace
+trains don't raise it, or it would run away), so it always reflects the fleet
+you've committed to; lowest-id HQ with queue headroom refills losses paying
+Alloy + Crew at queue time per M3 §4.7, silently skipped when unaffordable or
+Crew-capped; no spending guardrail, §18) and **`auto_repair`** (bool — whether
+draftable workers *proactively* seek a damaged own structure, vs only on an
+explicit order or an active wall plan, §4.2). `alloy_flux_ratio` and
+`build_mine_ratio` are **gone** — the split and the draft counts *are* the
+per-worker states, set by `SET_ECONOMY` (§12) carrying the three handle
+positions as worker counts (`alloy_side`, `alloy_build`, `flux_build`) and
+reassigning auto workers (ascending id) to match, clamped to the live pool —
+a one-shot on handle release, not a maintained target.
+
+**Per tick** the economy is now cheap and event-driven — no whole-fleet
+reconcile:
+
+1. **Auto-replace** check (live+queued worker count vs `worker_target`).
+2. **Harvest pass** (ascending worker id, so per-node throughput sharing is
+   ascending-id): each non-`MANUAL` worker advances its harvest state machine
+   (§3.1) on its `work_state` side. Auto-mining **stays home** — a worker only
+   picks a source within `AUTO_MINE_RADIUS` of **its own `home_depot`** (the
+   stronghold it belongs to) and hauls back to that depot, so workers stick to
+   their own base and never wander to the contested middle, the enemy side, or
+   another stronghold's line (the playtest "workers cross the map" fix; see the
+   §18 per-`home_depot` note). To work distant resources you build a forward
+   HQ/Refinery (workers trained there adopt it as home) or hand-order a worker
+   there (a `MINE` pins the node directly, ignoring the radius — that trip is
+   yours to command). Among in-radius sources it picks the nearest one **not yet
+   saturated** — filled to the worker count its `throughput` supports — before
+   piling onto the next, so a fleet spreads across nearby deposits instead of
+   crowding the closest (the "all workers swarm one Alloy site" fix). Refineries
+   preferred over raw vents when both are in range (§3.1); a worker mid-carry
+   finishes its deposit before any reassignment (§3.1). (`AUTO_MINE_RADIUS` is a
+   sim tuning constant, §18.)
+3. **Build draft:** `BUILD` / wall / `REPAIR` work (and, if `auto_repair`,
+   damaged structures) pulls the **nearest draftable (`_BUILD`) worker**; an
+   explicit player `BUILD` pulls the nearest free worker regardless of the
+   draft handles (drawing straight off mining if it must), keeping its
+   `work_state` so it returns to its job when the structure is up. The HUD
+   **reports** when no worker, funds, or visible ground is available — closing
+   the playtest "say build a house and nothing happens" gap (§4, §13).
+
+This stays **sim-side and identical on every peer**; the tab crosses the
+boundary only at human frequency (one `SET_ECONOMY` on release).
 
 ### 3.3 Why this stays inside the sim wall
 
@@ -809,8 +871,9 @@ A small macro state machine — enough to make a new player work, explicitly
 *not* a strong AI (that's post-M7). Per think pass, in priority order:
 
 - **Economy maintenance:** keep workers/nanos on resources (Rebels: set the
-  economy dials — `worker_target`, alloy/flux and build/mine ratios — and let
-  auto-replace refill losses; Hive: keep nanos on alloy/flux), expand (a new
+  economy via `SET_ECONOMY` — `worker_target` plus the worker-state split/draft
+  counts (§3.2) — and let auto-replace refill losses; Hive: keep nanos on
+  alloy/flux), expand (a new
   HQ/Refinery, or a Worker onto a fresh vent) when the current source
   saturates or depletes.
 - **Tech/supply:** build supply (Housing / Relay) before hitting the cap;
@@ -902,9 +965,16 @@ new system, just branches the systems already have a place for:
 - **RECKLESS** — long/no leash: always pursues an acquired target, chases
   across the map. (The bot's attack waves run reckless; defensive groups
   hold.)
-- **SKIRMISH** — kite: a ranged unit (`attack_range` > melee threshold)
-  whose target closes inside a min-distance backs off to maintain range,
-  firing while retreating. Melee units treat skirmish as balanced.
+- **SKIRMISH** — pressure: the unit never stops its advance to fight. On an
+  attack-move it keeps moving toward the order's goal and fires
+  *opportunistically* whenever its attack is off cooldown and a target is in
+  range — so harassers keep flowing toward the objective instead of stalling at
+  every contact. (Revised post-playtest, 2026-06-17: this supersedes the
+  original "kite — back off to maintain range" definition, which read as jitter
+  against the deterministic push-out and gave no way to *push* with ranged
+  units. The kite-back-off behavior may return later as a separate flag if
+  wanted; `kite_min_distance` stays in the schema, currently unread.) Idle with
+  no goal, a skirmisher just fires in place (like balanced).
 
 Plus a small set of **priority flags** (hashed bitfield), M4 scope:
 
@@ -1023,8 +1093,8 @@ are new fields in the existing tables, folded into the catalog content hash
 
 | Kind | targets | params | Notes |
 |---|---|---|---|
-| `MINE` | `[worker_ids]` | `node` (entity id) | **New.** Manual harvest order onto an Alloy deposit, Flux vent (direct, §3.1), or Refinery. No per-unit pin — instead it nudges the player's economy dials toward that task (§3.2). The Rebel `context_orders.resource` resolves to this (§13.2). |
-| `SET_ECONOMY` | `[player-scope]` | `worker_target` (int), `alloy_flux_ratio` (fixed), `build_mine_ratio` (fixed), `auto_repair` (bool) | **New.** The Economy-tab intent dials (§3.2). Scoped per player; one command carries the whole dial set, emitted on slider release. *(Replaces the earlier per-node `ASSIGN_WORKERS` sketch.)* |
+| `MINE` | `[worker_ids]` | `node` (entity id) | **New.** Manual harvest order onto an Alloy deposit, Flux vent (direct, §3.1), or Refinery. An *economy* order: sets the worker's mining-side `work_state` and **re-enlists** it into the auto pool (`MANUAL` → `ALLOY`/`FLUX`), so the slider follows the order (§3.2). The Rebel `context_orders.resource` resolves to this (§13.2). |
+| `SET_ECONOMY` | `[player-scope]` | `worker_target` (int), `auto_repair` (bool), `alloy_side` (int), `alloy_build` (int), `flux_build` (int) | **New.** The Economy-tab control (§3.2). Scoped per player; one command carries `worker_target` + `auto_repair` plus the three slider handle positions as worker counts, reassigning auto workers (ascending id) to match on handle release. *(Replaces the earlier per-node `ASSIGN_WORKERS` sketch; the `alloy_flux_ratio`/`build_mine_ratio` ratios became per-worker `work_state` counts post-playtest, §3.2.)* |
 | `SET_TACTIC` | `[unit_ids]` | `stance` (enum int), `flags` (int bitfield) | **Activated** (was declared). §9.2. |
 | `PATROL` | `[unit_ids]` | `x`, `y` (fixed) | **Activated as real patrol** (was MOVE-aliased). §9.3. Endpoint A is the unit's position at execution. |
 | `BUILD` | `[builder_id]` | `type`, `cx`, `cy` (+ existing) | **Extended:** `mechanic: worker` branch (§4) — no capsule, builder travels. M3 capsule path unchanged. |
@@ -1064,13 +1134,17 @@ M3 §2.1, realized) overrides:
   data*).
 - **Build/Train grids:** populate from the Rebel catalog automatically
   (already catalog-driven; no UI work beyond the data layer).
-- **Economy tab:** the Rebel economy widget is **worker intent dials**, not
-  nano sliders — a `worker_dials` widget (a `worker_target` stepper, an
-  alloy/flux ratio slider, a build/mine ratio slider, an `auto_repair` toggle,
-  plus a live "workers per task / income" readout), the Rebel analog of
-  `alloc_sliders`, emitting `SET_ECONOMY` (§3.2). The tab id is the same
-  ("economy"); the *widget bound to it* is faction data. (Two widgets, one tab
-  slot — precisely the UI-as-data split.)
+- **Economy tab:** the Rebel economy widget is the **tri-handle worker
+  slider**, not nano sliders — a `worker_dials` widget: one bar over the auto
+  pool with a center Alloy/Flux handle and a per-side build/repair draft handle
+  (§3.2), snapping to whole workers (the center handle wins a coincident
+  touch), plus a `worker_target` stepper, an `auto_repair` toggle, and a live
+  "workers per task / income" readout (the honest where-are-my-bodies view).
+  The Rebel analog of `alloc_sliders`, emitting `SET_ECONOMY`. The tab id is
+  the same ("economy"); the *widget bound to it* is faction data. (Two widgets,
+  one tab slot — precisely the UI-as-data split.) The viewport and the tab edit
+  the same intent: a worker re-enlisted by a `MINE`/HQ order steps the slider,
+  a worker pulled to an army shrinks its pool (§3.2).
 - **Build tab — draw-wall verb:** the Rebel Build layer adds a "build wall"
   verb that arms the modal stroke and emits `BUILD_WALL` (§4.4). The stroke
   rasterization and the segment-queue construction are engine mechanics; that
@@ -1179,12 +1253,17 @@ Per repo convention, one headless script per check in `tests/`:
   across workers, worker death drops carry (no bank). Flux both ways: direct
   vent mining accrues at `raw_flux_rate` and draws the vent down; a Refinery
   auto-links the vents within `refinery_radius` at COMPLETE and harvests at
-  `harvest_rate`, drawing its linked vents down in id order. The **dial
-  reconcile**: `build_mine_ratio`/`alloy_flux_ratio` produce the right
-  per-task counts, the build reserve sources a builder for a BUILD (nearest
-  reserve worker, then a harvester when empty), `worker_target` auto-replaces
-  a killed worker, and a manual `MINE` nudges the dials rather than pinning a
-  unit. Golden balances/positions at fixed ticks.
+  `harvest_rate`, drawing its linked vents down in id order. The **work-state
+  model** (§3.2): `SET_ECONOMY` reassigns the auto pool to the requested
+  Alloy/Flux/build counts; idle harvesters spread across nearby nodes by
+  saturation instead of crowding the nearest, stay within `AUTO_MINE_RADIUS`
+  of a depot, and **never pick a resource still in unexplored fog** (only ones
+  the player has seen); a draftable (`_BUILD`) worker sources a
+  `BUILD`/wall/repair and returns to mining after; a `MINE` order re-enlists a
+  `MANUAL` worker and steps the split; a `MOVE`/`ATTACK` ejects a worker to
+  `MANUAL` and the reconcile leaves it alone; `worker_target` auto-replaces a
+  killed worker **into the dead worker's state** while a fresh trainee enters
+  the smaller mining side. Golden balances/positions at fixed ticks.
 - `worker_build_check.gd` — worker travels to site, GROWING freezes when
   the worker is pulled and resumes when returned, cost reserved at order
   and refunded on pre-GROWING cancel, partial refund after, repair heals a
@@ -1226,7 +1305,8 @@ Per repo convention, one headless script per check in `tests/`:
   economies, bot stream, played to elimination, vision recompute ticks
   covered) twice from one seed → identical hash streams. The canary for
   "forgot to hash a new field" (carry, stance, anchor, patrol endpoints,
-  needs_builder, eliminated_tick, economy dials, refinery `linked_vents`,
+  needs_builder, eliminated_tick, worker `work_state`, `worker_target` /
+  `auto_repair` / the replacement-state FIFO, refinery `linked_vents`,
   wall plan, attack fallback position).
 - `perf_check.gd` — extended: the 150-unit melee now runs with **two**
   running economies (Hive nanos + Rebel worker fleet) to keep the
@@ -1290,6 +1370,22 @@ and headless-tested (steps 1–8 + the determinism/perf extensions all green);
 the match/UI/view integration is wired but its presentation is unverified
 off-device. Small deviations made during implementation, none load-bearing:
 
+- **Economy redesigned to a per-worker `work_state` model** (2026-06-17, a
+  second playtest pass — *supersedes* the original §3.2 intent-dial design,
+  which made workers impossible to command individually). Workers are now in
+  one of five states (`ALLOY` / `ALLOY_BUILD` / `FLUX` / `FLUX_BUILD` /
+  `MANUAL`); the Economy slider is a three-handle window onto the auto pool's
+  state counts; `SET_ECONOMY` carries the handle positions as worker counts;
+  `MOVE`/`ATTACK`/`PATROL`/hold eject a worker to `MANUAL` while
+  `MINE`/`BUILD`/`REPAIR` keep (or re-enlist) it in the pool; idle harvesters
+  spread across nodes by saturation; and auto-replace restores the dead
+  worker's state while a fresh trainee joins the smaller mining side. The
+  `alloy_flux_ratio` / `build_mine_ratio` player dials are removed. Auto-mining
+  is bounded to `AUTO_MINE_RADIUS` (a sim const, ~24 cells) of an own depot and
+  to resources the player has actually *seen* (a per-player discovered-node set,
+  the one bit of fog-memory the sim consults) so fleets neither wander the map
+  nor mine through fog; distant resources need a forward depot or a hand `MINE`.
+  Full spec and rationale in §3.2.
 - **Worker-built structures spawn GROWING + `needs_builder` immediately**
   (matching §4.1's field table, not a separate "reserved-unstarted" pre-spawn
   state). `needs_builder` zeroes the `Fixed.ONE`/tick auto-progress; a worker
@@ -1318,6 +1414,117 @@ off-device. Small deviations made during implementation, none load-bearing:
   is the one viewport interaction still to wire; the `BUILD_WALL` sim path and
   the Rebel "Draw Wall" verb are in place.
 
+*Controls / unit-AI playtest pass (2026-06-17).* A second on-desktop play
+session drove a batch of feel fixes, none load-bearing:
+
+- **Control button relocated to the bottom-left corner** (was stacked with the
+  command buttons on the right edge). The move/attack radial buttons now sit at
+  1/3 and 2/3 of the right edge (even spacing for the remaining two), freeing
+  the left thumb to hold the control modifier while the right thumb gives orders
+  — `ctrl+move` (queue a waypoint) was awkward with both on one edge. The corner
+  button is lifted just enough that its deselect-all petal stays on screen. This
+  refines design.md "The control button" (which placed it last on the right).
+- **Radial side buttons open instantly on press** (the ~0.25 s hold delay is
+  gone) so high-APM swipes aren't gated by the UI; a pure tap still resolves to
+  the default command (the pointer never leaves the dead zone). Refines the
+  "tap = default, hold = options" idiom to "tap = default, press = options."
+- **Attack-move now actually moves to engage.** A unit on attack-move that
+  acquires an enemy within `acquire_range` steers directly at it until in attack
+  range (then stands and fights), instead of marching past toward the goal and
+  only engaging whatever happened to fall in range en route — so an army
+  attack-moved across the map stops and fights the army it runs into (§9.1/§9.3,
+  the playtest "they just walk past enemies" fix). `hold_position` units skip
+  the diversion (planted); skirmishers skip it too (they keep advancing, above).
+- **Toggle abilities sync the whole selected group to one state** instead of
+  flipping each unit blindly: the target state is the majority current state
+  among units that can act, ties resolved to ON/morphed, and only off-target
+  units morph. So a mixed group of rooted/uprooted Carapaces all converge
+  (`_execute_toggle_group`), removing the "hand-pick only the rooted ones to
+  uproot" chore.
+- **The Locations list is seeded at match start** with the local player's main
+  structure(s) ("Home") and each opponent's start ("Enemy"), so the player can
+  attack-move / build / recall to the bases that matter without first hunting
+  the map. A second main built later (a forward HQ/Stronghold) is auto-pinned
+  the tick it completes — but only when it's a real expansion, farther than the
+  auto-mine radius (`Sim.AUTO_MINE_RADIUS`, the resource area one depot serves)
+  from every pin already placed, so a rebuild next to home adds no duplicate.
+  Pure UI (designations are never sim state).
+
+- **The worker economy is per-stronghold and target-based** (2026-06-18, a
+  third economy pass — refines the per-worker `work_state` model). The
+  keep-target and the Alloy/Flux/build split now live on **each depot**
+  (`worker_target`, `eco_alloy`, `eco_alloy_build`, `eco_flux_build` on the
+  SimEntity), not the player — so every stronghold replenishes and allocates
+  independently and trains its own replacements (`_auto_replace_depot`). The
+  allocation is a **stored target keyed to `worker_target`, not a window onto
+  the live pool**, so losing workers never moves it: the Economy tab shows one
+  slider *per stronghold* whose range is that base's target, and auto-replace
+  refills toward the stored split, **gap-filling the most-deficient role**
+  (`_gap_fill_state`, replacing the dead-state FIFO). A hand-trained worker
+  raises *that* base's target on the side it should grow — a homogeneous base
+  (all one resource, >1 worker) stays homogeneous (`_grow_depot_target`,
+  request: "assume that's where they want those workers"). Carry now deposits at
+  the **nearest** depot (alloy/flux is one shared player pool, so it's just the
+  shortest walk), and a `MINE` order onto a node in another base's region
+  **repools the worker to that base** (`home_depot` ← nearest depot to the node)
+  so it mines and hauls there instead of trekking home. `SET_ECONOMY` is now
+  scoped to a depot (`targets[0]`); `auto_repair` stays the one global dial.
+  This supersedes §3.2's player-level `worker_target` / replacement-FIFO and the
+  "slider is a window onto live workers" framing.
+- **Workers belong to a stronghold (per-`home_depot` zones).** Each worker
+  carries a hashed `home_depot` (its nearest own depot when unset, adopted on
+  spawn; re-pointed if that base dies, or when re-enlisted by tapping a depot).
+  Auto-mining only picks sources within `AUTO_MINE_RADIUS` of *that* depot, carry
+  returns to *that* depot, and the wall/build auto-draft only pulls workers whose
+  home zone covers the site — so workers stick to their own base instead of
+  roaming to another stronghold's resources or being yanked across the map. A
+  second base's workers (trained there) mine there. Supersedes §3.2's
+  "within radius of *any* of its player's depots." Explicit player builds still
+  pick the nearest free worker (escorting one out to expand is intended); manual
+  `MINE` still pins a node anywhere.
+- **A worker tapped onto an own structure that is under construction or damaged
+  is a build-assist / repair** (it walks over and works on it), not a mine or
+  re-enlist — so a paused build resumes by tapping the worker back onto it, and a
+  damaged building gets hand-repaired. Tapping a worker onto a *complete,
+  undamaged* depot still re-enlists it to mining (and sets that depot as home).
+- **Workers can build onto free ground they can't see.** A worker BUILD no
+  longer requires current vision of the footprint — only that the ground is
+  actually free; the worker walks there and raises it (the Rebel mirror of the
+  Hive's capsule-into-fog gamble — you commit a body, not a guess). Overrides
+  §4.1's "ordered only onto ground the player can see." (Minor: a build onto
+  unseen *occupied* ground silently no-ops, a small occupancy tell — acceptable
+  for the convenience.)
+- **Build-at-a-location** auto-resolves the vent for vent-bound structures
+  (Hive Siphon): tapping a base near a vent picks the nearest untaken vent so the
+  popup opens with the Siphon already on it — no manual placement needed.
+- **Build screen is two centered columns** — locations on the left, minimap on
+  the right, each centered in its half (was a left-justified row that smooshed
+  everything to one side).
+
+- **All orders route with lazy theta\*** (`Sim.USE_FLOW_FIELDS = false`),
+  whatever the group size — the few-tick wait while a shared flow field built
+  incrementally felt awkward in the hand, and instant per-unit pathing reads far
+  better. The flow-field code (build queue, cache, gradient-follow waypoint) is
+  retained and dormant, re-enabled by the switch. Per-unit theta\* gets pricey at
+  300-unit orders, but that scale is past where the GDExtension port lands, so
+  it's not a concern in practice (design.md "Pathfinding and movement").
+
+- **Build-at-a-location console flow** realizes design.md's "open the minimap
+  with a list of designated locations … select a location to build there" plus
+  the popup-viewport placement. The Build placement screen (`build_place`) is
+  now a `build_targets` widget: the **saved locations list on the left**, the
+  **pick-minimap on the right**. Tapping a location (or its pin) auto-places the
+  building at the nearest spot near that base with a clear 1-cell margin on all
+  sides (a pathing lane — `_predict_clear`/clearance-aware spiral, inside-
+  influence preferred at equal distance), then opens the **popup viewport jumped
+  there with the ghost pre-placed**, so the player confirms in one tap or nudges
+  it; tapping bare map ground opens the popup at that point for hand placement;
+  swiping the console down still does direct in-viewport placement. This makes
+  managing builds across multiple bases fast. `build_targets` is engine-coded
+  layout *referenced from* and *parameterized by* catalog data (it's in
+  `WIDGET_TYPES`, the screen lists it, the minimap mode is a param, every target
+  is live designation data) — no binding is hardcoded, per the UI-as-data rule.
+
 1. **Bot difficulty surface** — how many scalars before "difficulty" is
    legible to a player (§8.2)? Starting hypothesis: 3 named tiers backed by
    the scalar bundle.
@@ -1339,10 +1546,15 @@ off-device. Small deviations made during implementation, none load-bearing:
    (§3.1). Adding a Flux *buffer* later (workers top up instantly, expansion
    caching becomes a thing) is an explicit, clean future add — decide if/when
    playtests want the deeper economy. Not blocking.
-7. **Economy-dial manual feedback** — when a hand `MINE`/`BUILD` nudges the
-   dials (§3.2), how *far* does one order move a slider, and does the slider
-   relax back when the task ends or stick? A feel question; the dial model
-   itself is decided.
+7. **Economy slider tuning** (the per-worker `work_state` model, §3.2, is
+   decided): two feel questions remain. (a) **Touch ergonomics** — three
+   handles on one bar over a small auto pool (2–3 workers) wants device
+   playtest; landscape full-width console should give the room, but the
+   coincident-handle hit-test (center wins) and minimum handle spacing need
+   confirming. (b) **Fresh-worker placement** — a newly trained (non-
+   replacement) worker joins the smaller mining side; whether that, vs a
+   remembered last split, feels right is a tuning call. (Auto-*replacements*
+   restoring the dead worker's state is decided.)
 8. **Drawn-wall pricing & gesture** — design.md Open Q #10, now live for the
    Rebels (§4.4): per-cell cost, min/max stroke length, and how the modal
    build-wall stroke coexists with the lasso. Needs playtest; the
@@ -1357,10 +1569,14 @@ off-device. Small deviations made during implementation, none load-bearing:
 
 *Resolved during M4 design (folded into the body):* **multi-worker
 construction** ships — additional builders shorten build time and drain
-resources while they assist, the WC3 model (§4.1); the **Rebel economy is
-intent-dial driven** — `worker_target` (auto-replace, no spending guardrail —
-we trust the dial), alloy/flux and build/mine ratios, auto-repair, with
-manual orders feeding back into the dials rather than pinning units (§3.2);
+resources while they assist, the WC3 model (§4.1); the **Rebel economy is a
+per-worker `work_state` model** (revised post-playtest, §3.2) — `worker_target`
+(auto-replace, no spending guardrail; replacements restore the dead worker's
+state) plus a three-handle slider that is a *window* onto the auto pool's
+Alloy/Flux/build-draft state counts, with `MINE`/`BUILD`/`REPAIR` keeping a
+worker in the pool and `MOVE`/`ATTACK`/`PATROL` ejecting it to `MANUAL` so it
+can be commanded as an ordinary unit (superseding the original "intent dials,
+no per-unit pin");
 the **Refinery is a standalone vent-pooling source** — not built-on-vent, not
 a depot, and a *live pass-through* (no stored Flux in M4) that gives workers a
 faster rate **and** bigger loads than the slow, light direct-vent-mining

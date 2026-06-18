@@ -12,7 +12,6 @@ extends TouchButton
 
 signal command_chosen(button: RadialButton, command_id: String)
 
-const HOLD_TIME := 0.25
 const RADIUS := 44.0
 const DEAD_ZONE := 48.0
 const PETAL_OFFSET := 104.0
@@ -61,18 +60,15 @@ func mark_used() -> void:
 
 
 func _press_started() -> void:
-	_radial_open = false
+	# Open the radial instantly — no hold delay, so high-APM swipes never wait
+	# on the UI. A pure tap still resolves to the default command on release
+	# (the pointer never leaves the dead zone), so tap-for-default is intact.
+	_radial_open = true
 	_used_while_held = false
 
 
 func _pointer_moved() -> void:
 	if _radial_open:
-		queue_redraw()
-
-
-func _held(time: float) -> void:
-	if not _radial_open and time >= HOLD_TIME:
-		_radial_open = true
 		queue_redraw()
 
 

@@ -13,13 +13,18 @@ var faction: int = 0
 var alloy: int = 0
 var flux: int = 0
 
-## M4 Rebel economy intent dials (design_m4.md §3.2). Sim-side so the
-## approximation runs identically on every peer; set by SET_ECONOMY (and
-## nudged by manual MINE orders). Ratios are fixed 0..1.
-var worker_target: int = 0          # desired worker headcount (auto-replace)
-var alloy_flux_ratio: int = Fixed.ONE   # harvest split; 1.0 = all alloy
-var build_mine_ratio: int = 0       # fraction of the pool held as build reserve
+## M4 Rebel economy (design_m4.md §3.2 playtest). The worker headcount target
+## and Alloy/Flux/build split are now PER STRONGHOLD (on each depot SimEntity),
+## so every base replenishes and allocates independently. The player keeps only
+## the global auto-repair toggle. Auto-replace refills each base toward its own
+## target, and a replacement gap-fills the base's most-deficient role.
 var auto_repair: bool = false
+
+## Resource node ids this player has ever seen (design_m4.md §3.2/§6.4): the
+## one bit of fog-memory the sim consults, so auto-mining never targets a node
+## still in unexplored fog. Cumulative, populated during the vision recompute,
+## hashed (ascending — resources are added in id order).
+var discovered_resources := PackedInt32Array()
 
 ## M4 win/loss (design_m4.md §7.2): tick the player was first eliminated
 ## (no COMPLETE is_main structure), latched and never cleared. -1 = alive.
@@ -37,9 +42,11 @@ var wall_type: int = -1   # barricade type_key for the current plan
 
 
 func hash_into(h: int) -> int:
-	for v: int in [id, faction, alloy, flux, worker_target, alloy_flux_ratio,
-			build_mine_ratio, int(auto_repair), eliminated_tick, int(had_main),
+	for v: int in [id, faction, alloy, flux,
+			int(auto_repair), eliminated_tick, int(had_main),
 			wall_type]:
+		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF
+	for v in discovered_resources:
 		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF
 	for v in wall_cells:
 		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF

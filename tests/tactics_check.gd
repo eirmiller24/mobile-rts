@@ -1,8 +1,9 @@
 extends SceneTree
 ## Headless checks for M4 Unit AI v1 (design_m4.md §9 / §16): stances change
 ## behavior deterministically — defensive holds/leashes and returns, reckless
-## chases, skirmish kites at min distance, hold_position never moves to
-## acquire, focus_fire concentrates — and PATROL swaps endpoints.
+## chases, skirmish keeps advancing toward its goal (firing opportunistically),
+## hold_position never moves to acquire, focus_fire concentrates — and PATROL
+## swaps endpoints.
 ##
 ## Run on the host:
 ##   flatpak run org.godotengine.Godot --headless --path . \
@@ -16,7 +17,7 @@ func _initialize() -> void:
 	_test_balanced_holds()
 	_test_hold_position()
 	_test_defensive_returns()
-	_test_skirmish_kites()
+	_test_skirmish_advances()
 	_test_focus_fire()
 	_test_patrol_swaps()
 
@@ -155,17 +156,26 @@ func _test_defensive_returns() -> void:
 	_expect(dx <= Sim.ARRIVE_DIST, "defensive returned to its anchor (off by %d)" % dx)
 
 
-func _test_skirmish_kites() -> void:
+func _test_skirmish_advances() -> void:
 	var sim := _sim()
 	var sk := _unit(sim, 1, "t.ranged", 20, 20)
-	# Enemy well inside kite_min_distance (4 tiles).
-	var enemy := _unit(sim, 2, "t.dummy", 22, 20)
+	# An enemy on the way: a balanced unit would stop at attack range and fight,
+	# but a skirmisher keeps advancing toward its attack-move goal, firing
+	# opportunistically as it passes (design_m4.md §9.1).
+	var enemy := _unit(sim, 2, "t.dummy", 24, 20)
 	_set_tactic(sim, sk, CatalogSchema.Stance.SKIRMISH)
-	var d0: int = absi(sk.x - enemy.x)
-	for _t in 15:
+	var c := SimCommand.new(1, SimCommand.Kind.ATTACK_MOVE)
+	c.targets = [sk.id]
+	c.params = {"x": 40 * Fixed.ONE, "y": 20 * Fixed.ONE}
+	sim.schedule(c)
+	var x0: int = sk.x
+	var hp0: int = enemy.hp
+	for _t in 50:
 		sim.step()
-	var d1: int = absi(sk.x - enemy.x)
-	_expect(d1 > d0, "skirmisher backed off from the too-close enemy (%d -> %d)" % [d0, d1])
+	_expect(sk.x > x0 + 4 * Fixed.ONE,
+			"skirmisher kept advancing toward its goal past the enemy (x %d -> %d)"
+			% [x0, sk.x])
+	_expect(enemy.hp < hp0, "skirmisher fired opportunistically while advancing")
 
 
 func _test_focus_fire() -> void:

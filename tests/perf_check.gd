@@ -49,8 +49,8 @@ func _initialize() -> void:
 	for i in 30:
 		sim.spawn_unit(0, Fixed.from_int(6 + (i % 6)), Fixed.from_int(98 + (i / 6)), worker_key)
 	var econ := SimCommand.new(0, SimCommand.Kind.SET_ECONOMY)
-	econ.params = {"worker_target": 30, "alloy_flux_ratio": Fixed.ONE,
-			"build_mine_ratio": 0, "auto_repair": false}
+	econ.params = {"worker_target": 30, "auto_repair": false,
+			"alloy_side": 30, "alloy_build": 0, "flux_build": 0}
 	sim.schedule(econ, 4)
 
 	var seq := 0
@@ -85,6 +85,10 @@ func _initialize() -> void:
 	east_cmd.targets = east
 	east_cmd.params = {"x": Fixed.from_int(8), "y": Fixed.from_int(32)}
 	sim.schedule(east_cmd)
+
+	# Reveal the field so the worker fleet actually mines (auto-mining only
+	# targets discovered nodes) — keeps the perf load honest.
+	sim._recompute_vision()
 
 	var total_us := 0
 	var worst_us := 0

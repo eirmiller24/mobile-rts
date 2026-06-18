@@ -110,17 +110,19 @@ func _update_memory() -> void:
 
 
 func _economy() -> void:
-	# Rebel-style economy: drive the intent dials and let auto-replace and the
-	# reconcile keep workers on task. Detected by owning a depot/worker.
-	var has_workers := not _own(_is_worker_filter).is_empty()
+	# Rebel-style economy: drive EACH stronghold's worker dials (per-depot now,
+	# design_m4.md §3.2 playtest) and let auto-replace keep them staffed. Aim
+	# ~6 alloy / 2 flux per base, one alloy worker draftable to build.
 	var depots := _own(_is_depot_filter)
-	if has_workers or not depots.is_empty():
-		_issue(SimCommand.Kind.SET_ECONOMY, [], {
+	for d in depots:
+		_issue(SimCommand.Kind.SET_ECONOMY, [d.id], {
 			"worker_target": 8,
-			"alloy_flux_ratio": (Fixed.ONE * 3) / 4,  # mostly alloy
-			"build_mine_ratio": Fixed.ONE / 8,
-			"auto_repair": true,
+			"alloy_side": 6,
+			"alloy_build": 1,
+			"flux_build": 0,
 		})
+	if not depots.is_empty():
+		_issue(SimCommand.Kind.SET_ECONOMY, [], {"auto_repair": true})
 	# Hive-style economy needs no command: strongholds default to mining alloy.
 
 

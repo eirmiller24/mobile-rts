@@ -57,10 +57,10 @@
 				]
 			},
 			"build_place": {
-				"title": "Placement",
+				"title": "Build at…",
 				"widgets": [
-					{ "type": "label", "label": "Tap a pin to auto-place near it, tap the minimap to place precisely there — or swipe the console down and tap the world directly." },
-					{ "type": "minimap", "params": { "mode": "pick" } }
+					{ "type": "label", "label": "Pick a base on the left to preview the building auto-placed there (confirm or nudge it), tap the map to place precisely — or swipe the console down and tap the world directly." },
+					{ "type": "build_targets", "params": { "minimap_mode": "pick" } }
 				]
 			},
 			"build_train": {

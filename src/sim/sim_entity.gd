@@ -120,14 +120,57 @@ var ability_cooldowns: Dictionary = {}
 
 ## M4 worker harvest economy (design_m4.md §3). The loop is a small state
 ## machine stored in hashed entity fields; carry is fixed-point resource
-## units of carry_kind. harvest_role is the dial reconcile's per-worker
-## assignment (0 NONE/build-reserve, 1 ALLOY, 2 FLUX).
+## units of carry_kind. work_state is the per-worker truth the Economy slider
+## is a window onto (§3.2): the four auto-pool states plus MANUAL (out of the
+## economy, an ordinary commandable unit). _BUILD variants mine but are
+## draftable to build/wall/repair. Replaces the old harvest_role dial.
 enum HarvestState { IDLE, TO_SOURCE, HARVESTING, TO_DEPOT, DEPOSITING }
+enum WorkState { ALLOY, ALLOY_BUILD, FLUX, FLUX_BUILD, MANUAL }
 var harvest_state := HarvestState.IDLE
 var carry: int = 0          # fixed
 var carry_kind: int = -1    # CatalogSchema.ResourceKind; -1 = empty
 var assigned_source: int = 0  # source entity id (deposit / vent / refinery)
-var harvest_role: int = 0   # 0 NONE, 1 ALLOY, 2 FLUX
+var work_state := WorkState.ALLOY
+## The stronghold/depot this worker belongs to (design_m4.md §3.2 playtest):
+## auto-mining stays within AUTO_MINE_RADIUS of it, so workers stick to their own
+## base and count toward its replenish target. 0 = unassigned (set to the nearest
+## depot on the next economy tick). Sticky until that depot dies or a MINE order
+## moves the worker to another base's region. (Carry deposits at the *nearest*
+## depot — alloy/flux is one shared player pool, so deposit is just a walk.)
+var home_depot: int = 0
+
+## M4 per-stronghold worker economy (design_m4.md §3.2 playtest). On a depot
+## structure these are the economy TARGET for that base, independent of how many
+## workers are currently alive (so deaths don't change the plan): keep
+## worker_target workers, of which eco_alloy mine Alloy (eco_alloy_build of those
+## draftable to build/repair) and the rest mine Flux (eco_flux_build draftable).
+## Auto-replace refills toward this, the slider edits it, and it persists through
+## losses. All 0 on non-depot entities.
+var worker_target: int = 0
+var eco_alloy: int = 0
+var eco_alloy_build: int = 0
+var eco_flux_build: int = 0
+
+
+## Mining side of a work_state: ALLOY (1) / FLUX (2), or 0 for MANUAL.
+func mine_role() -> int:
+	match work_state:
+		WorkState.ALLOY, WorkState.ALLOY_BUILD:
+			return 1
+		WorkState.FLUX, WorkState.FLUX_BUILD:
+			return 2
+		_:
+			return 0
+
+
+## Draftable to build/wall/repair (an _BUILD auto-pool state).
+func build_draftable() -> bool:
+	return work_state == WorkState.ALLOY_BUILD \
+			or work_state == WorkState.FLUX_BUILD
+
+
+func is_manual_worker() -> bool:
+	return work_state == WorkState.MANUAL
 
 ## M4 worker build (design_m4.md §4). build_target is the GROWING structure
 ## this worker is raising/repairing; >0 means BUILDING (immobile on site).
@@ -179,7 +222,8 @@ func hash_into(h: int) -> int:
 			nano_alloc[0], nano_alloc[1], nano_alloc[2],
 			rally_x, rally_y, int(morphed), morph_ticks_left,
 			underground_ticks_left, surface_x, surface_y,
-			harvest_state, carry, carry_kind, assigned_source, harvest_role,
+			harvest_state, carry, carry_kind, assigned_source, work_state,
+			home_depot, worker_target, eco_alloy, eco_alloy_build, eco_flux_build,
 			build_target, wall_target_cell, int(needs_builder),
 			stance, tactic_flags, anchor_x, anchor_y, int(anchor_set)]:
 		h = (h * 31 + v) & 0x7FFFFFFFFFFFFFF
@@ -188,6 +232,7 @@ func hash_into(h: int) -> int:
 	for q in train_queue:
 		h = (h * 31 + q["type"]) & 0x7FFFFFFFFFFFFFF
 		h = (h * 31 + q["left"]) & 0x7FFFFFFFFFFFFFF
+		h = (h * 31 + q.get("replace_depot", 0)) & 0x7FFFFFFFFFFFFFF
 	var cd_keys := ability_cooldowns.keys()
 	cd_keys.sort()
 	for key in cd_keys:

@@ -46,6 +46,10 @@ var _result_shown := false
 
 var _accumulator := 0.0
 var _cmd_seq := 0
+## Own main structures already evaluated for an auto location pin (entity id ->
+## true), so each is considered exactly once when it completes.
+var _designated_mains := {}
+var _expansion_count := 0
 ## entity id -> UnitView, plus per-id previous/current sim positions for
 ## render interpolation between ticks.
 var _views := {}
@@ -180,6 +184,7 @@ func _start_match(factions: Dictionary) -> void:
 
 	_setup_bots()
 	_setup_result_overlay()
+	_setup_initial_designations()
 	_sync_views()
 
 
@@ -257,6 +262,60 @@ func _setup_result_overlay() -> void:
 	_result_layer.visible = false
 
 
+## Seed the Locations list with the bases that matter from the first second:
+## the local player's own main structure(s) ("Home") and every opponent's start
+## ("Enemy"), so the player can attack-move, build, or recall to them without
+## hunting the map (playtest ask). Pure UI — designations are never sim state.
+func _setup_initial_designations() -> void:
+	for id in sim._sorted_ids():
+		var e: SimEntity = sim.entities[id]
+		if e.kind != SimEntity.Kind.STRUCTURE:
+			continue
+		if not sim.catalog.sim_of(e.type_key).get("is_main", false):
+			continue
+		if e.player == 0:
+			continue # neutral map objects are never a base
+		_designated_mains[id] = true
+		designations.add_location(e.x, e.y,
+				"Home" if e.player == LOCAL_PLAYER else "Enemy")
+
+
+## Pin a freshly-built own main structure (a second stronghold / forward HQ) the
+## tick it completes — but only when it's a genuine expansion, i.e. farther than
+## the auto-mine radius (the resource area one depot serves) from every location
+## already pinned. Rebuilding next to home, or a base in an already-marked area,
+## adds no duplicate. Runs each tick off the view; designations are never sim
+## state.
+func _auto_designate_new_mains() -> void:
+	for id in sim.entities:
+		if _designated_mains.has(id):
+			continue
+		var e: SimEntity = sim.entities[id]
+		if e.kind != SimEntity.Kind.STRUCTURE or e.player != LOCAL_PLAYER:
+			continue
+		if not sim.catalog.sim_of(e.type_key).get("is_main", false):
+			continue
+		if e.build_state != SimEntity.BuildState.COMPLETE:
+			continue # wait until it actually stands
+		_designated_mains[id] = true # evaluated once, added or not
+		if _near_existing_location(e.x, e.y, Sim.AUTO_MINE_RADIUS):
+			continue
+		_expansion_count += 1
+		designations.add_location(e.x, e.y, "Expansion %d" % _expansion_count)
+
+
+## True if any pinned location is within `radius` (fixed world units) of (x, y).
+func _near_existing_location(x: int, y: int, radius: int) -> bool:
+	var r2 := Fixed.mul(radius, radius)
+	for o in designations.locations():
+		var loc: Dictionary = o["entry"]
+		var dx: int = loc["x"] - x
+		var dy: int = loc["y"] - y
+		if Fixed.mul(dx, dx) + Fixed.mul(dy, dy) <= r2:
+			return true
+	return false
+
+
 func _check_match_over() -> void:
 	if _result_shown:
 		return
@@ -314,6 +373,7 @@ func _faction_of(e: SimEntity) -> int:
 ## entities, and drop views whose entities died.
 func _capture_tick() -> void:
 	_sync_views()
+	_auto_designate_new_mains()
 	designations.prune(func(id: int) -> bool:
 		var e: SimEntity = sim.entities.get(id)
 		return e != null and e.hp > 0)
@@ -498,8 +558,19 @@ func _on_order_issued(command_id: String, units: Array[UnitView],
 		elif kind == SimCommand.Kind.MINE:
 			# The Rebel Mine order needs the tapped resource node (§12).
 			if target != null and target.entity_id > 0:
-				params["node"] = target.entity_id
-				_issue_command(kind, ids, params)
+				# Tapping a worker onto an own structure that's under construction
+				# (resume a paused/new build) or damaged is a build-assist, not a
+				# mine: the worker walks over and works on it (design_m4.md §4.1/§4.2).
+				var te: SimEntity = sim.entities.get(target.entity_id)
+				if te != null and te.kind == SimEntity.Kind.STRUCTURE \
+						and te.player == LOCAL_PLAYER \
+						and (te.build_state != SimEntity.BuildState.COMPLETE \
+							or te.hp < te.max_hp):
+					_issue_command(SimCommand.Kind.REPAIR, ids,
+							{"target": target.entity_id})
+				else:
+					params["node"] = target.entity_id
+					_issue_command(kind, ids, params)
 			else:
 				_issue_command(SimCommand.Kind.MOVE, ids, params)
 		else:
@@ -534,10 +605,11 @@ func _open_placement(type_key: int, sim_x: int, sim_y: int) -> void:
 
 
 func _on_place_confirmed(type_key: int, cx: int, cy: int) -> void:
-	var builder := sim.builder_for(LOCAL_PLAYER, type_key)
-	if builder == 0:
-		hud.set_status("nothing can build that")
+	var reason := sim.build_block_reason(LOCAL_PLAYER, type_key)
+	if reason != "":
+		hud.set_status(reason)
 		return
+	var builder := sim.builder_for(LOCAL_PLAYER, type_key, cx, cy)
 	_issue_command(SimCommand.Kind.BUILD, [builder],
 			{"type": type_key, "cx": cx, "cy": cy})
 	hud.set_status("building %s" % ctx.label_of(type_key))
@@ -553,7 +625,7 @@ func _on_plan_committed(structures: Array, wall_cells: PackedInt32Array,
 	var built := 0
 	for s: Dictionary in structures:
 		var type: int = s["type"]
-		var builder := sim.builder_for(LOCAL_PLAYER, type)
+		var builder := sim.builder_for(LOCAL_PLAYER, type, s["cx"], s["cy"])
 		if builder == 0:
 			continue
 		_issue_command(SimCommand.Kind.BUILD, [builder],

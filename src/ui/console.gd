@@ -19,6 +19,9 @@ const HEADER_H := 40.0
 ## a softer flick steps one detent; below that we settle to the nearest.
 const FLING_VELOCITY := 1100.0
 const STEP_VELOCITY := 320.0
+## Pathing-cell margin an auto-placed building tries to keep clear on every
+## side, so it doesn't wall off a lane (the build-at-a-location convenience).
+const CLEARANCE := 1
 
 var catalog: UICatalog
 ## Game access for live widgets (set by the HUD before add_child); null
@@ -264,9 +267,14 @@ func _build_widget(widget: UICatalog.WidgetDef) -> Control:
 						if widget.params.get("mode", "jump") == "pick" \
 						else MinimapView.Mode.JUMP
 				mini.custom_minimum_size = Vector2(320, 320)
-				mini.pin_tapped.connect(_on_minimap_pin.bind(mini))
-				mini.point_tapped.connect(_on_minimap_point.bind(mini))
+				mini.pin_tapped.connect(_preview_at_designation)
+				mini.point_tapped.connect(_on_build_point)
 				return mini
+		"build_targets":
+			if ctx != null:
+				return ConsoleWidgets.BuildTargets.new(ctx,
+						_preview_at_designation, _on_build_point,
+						widget.params.get("minimap_mode", "pick"))
 	var label := Label.new()
 	label.text = widget.label
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -333,98 +341,133 @@ func _begin_placement(type_key: int, widget: UICatalog.WidgetDef) -> void:
 	_show_screen(widget.params.get("placement_screen", ""))
 
 
-## Tap a designation pin while a build is armed -> auto-resolve a legal
-## footprint near the pin without leaving the console. Otherwise jump.
-func _on_minimap_pin(slot: int, mini: MinimapView) -> void:
+## Build at a saved location (a list row, or its pin on the minimap): auto-place
+## the building at the best clear spot near the base, then open the popup
+## viewport jumped there so the player can confirm in one tap or nudge it
+## (design.md "The Command Console" — auto-resolve plus popup placement). With
+## no build armed (the World/jump minimap) it just recenters the camera.
+func _preview_at_designation(slot: int) -> void:
 	var e: Variant = ctx.designations.entry(slot)
 	if e == null or e["kind"] != "location":
 		return
-	if mini.mode == MinimapView.Mode.PICK and _pending_build != -1:
-		_auto_place(_pending_build, e["x"], e["y"])
-	else:
+	if _pending_build == -1:
 		ctx.jump_camera.call(e["x"], e["y"])
 		detent = Detent.PEEK
+		return
+	var type_key := _pending_build
+	var s := ctx.sim.catalog.sim_of(type_key)
+	var site := _resolve_site(type_key, e["x"], e["y"])
+	if site.x == -1:
+		ctx.status.call("no vent inside influence" if s["builds_on_vent"]
+				else "no clear spot near %s" % e["name"])
+		return
+	# Center of the resolved footprint (sim fixed): the popup re-snaps the ghost
+	# under this point, landing it back on exactly these cells.
+	var cx := Fixed.from_float((site.x + s["foot_w"] / 2.0) / SimGrid.PATH_SUBDIV)
+	var cy := Fixed.from_float((site.y + s["foot_h"] / 2.0) / SimGrid.PATH_SUBDIV)
+	_open_popup(type_key, cx, cy)
+	ctx.status.call("placing %s near %s — confirm or drag" % [
+			ctx.label_of(type_key), e["name"]])
 
 
-## Bare map point: jump mode centers the camera and closes the console;
-## pick mode opens the popup viewport for hand placement there.
-func _on_minimap_point(x: int, y: int, mini: MinimapView) -> void:
-	if mini.mode == MinimapView.Mode.PICK and _pending_build != -1:
-		var type := _pending_build
-		_pending_build = -1
-		_on_back()
-		if ctx.cancel_placement.is_valid():
-			ctx.cancel_placement.call() # the popup's ghost takes over
-		ctx.open_placement.call(type, x, y)
-	else:
+## A bare map point (minimap tap): pick mode opens the popup for hand placement
+## at that point; jump mode (no build armed) just recenters the camera there.
+func _on_build_point(x: int, y: int) -> void:
+	if _pending_build == -1:
 		ctx.jump_camera.call(x, y)
 		detent = Detent.PEEK
+		return
+	_open_popup(_pending_build, x, y)
 
 
-## Client-side spiral search from the pin for the first legal footprint,
-## inside-influence positions preferred. Legality is judged on what the
-## player can see — fogged cells count as free; the sim settles the truth
-## at landing (§6.3).
-func _auto_place(type_key: int, px: int, py: int) -> void:
+## Hand off to the popup viewport: drop the console build state and the direct
+## viewport ghost, then open the popup centered on (x, y) (sim fixed). The popup
+## owns confirm/cancel from here; notify_build_committed returns the console.
+func _open_popup(type_key: int, x: int, y: int) -> void:
+	_pending_build = -1
+	_on_back()
+	if ctx.cancel_placement.is_valid():
+		ctx.cancel_placement.call() # the popup's ghost takes over
+	ctx.open_placement.call(type_key, x, y)
+
+
+## The footprint cell (cx, cy) to auto-place `type_key` near a pin (sim fixed):
+## the nearest untaken vent for vent-bound structures, else a clearance-aware
+## spiral search. Returns (-1, -1) when nothing suitable is nearby.
+func _resolve_site(type_key: int, px: int, py: int) -> Vector2i:
 	var sim := ctx.sim
 	var s := sim.catalog.sim_of(type_key)
+	if s["builds_on_vent"]:
+		return _nearest_vent_site(type_key, px, py)
 	var w: int = s["foot_w"]
 	var h: int = s["foot_h"]
+	return _spiral_search(type_key, w, h,
+			sim.grid.cell_of(px) - w / 2, sim.grid.cell_of(py) - h / 2)
+
+
+## Nearest untaken vent to the pin satisfying the territory requirement.
+func _nearest_vent_site(type_key: int, px: int, py: int) -> Vector2i:
+	var sim := ctx.sim
+	var s := sim.catalog.sim_of(type_key)
 	var found := Vector2i(-1, -1)
-	if s["builds_on_vent"]:
-		# Siphons skip the search: nearest untaken vent to the pin that
-		# satisfies the territory requirement.
-		var best_d2 := 0
-		for v: Dictionary in sim.vents():
-			if v["taken"]:
-				continue
-			var vcx: int = v["cx"]
-			var vcy: int = v["cy"]
-			if s["requires_territory"] and not sim.territory_covers(
-					ctx.local_player,
-					vcx * SimGrid.CELL + v["w"] * SimGrid.CELL / 2,
-					vcy * SimGrid.CELL + v["h"] * SimGrid.CELL / 2):
-				continue
-			var dx: int = Fixed.to_int(px) - (vcx + v["w"] / 2) / SimGrid.PATH_SUBDIV
-			var dy: int = Fixed.to_int(py) - (vcy + v["h"] / 2) / SimGrid.PATH_SUBDIV
-			var d2 := dx * dx + dy * dy
-			if found.x == -1 or d2 < best_d2:
-				best_d2 = d2
-				found = Vector2i(vcx, vcy)
-	else:
-		found = _spiral_search(type_key, w, h,
-				sim.grid.cell_of(px) - w / 2, sim.grid.cell_of(py) - h / 2)
-	if found.x == -1:
-		ctx.status.call("no vent inside influence" if s["builds_on_vent"]
-				else "no room near that pin")
-		return
-	var builder: int = sim.builder_for(ctx.local_player, type_key)
-	if builder == 0:
-		ctx.status.call("nothing can build that")
-		return
-	_pending_build = -1
-	if ctx.cancel_placement.is_valid():
-		ctx.cancel_placement.call()
-	ctx.issue.call(SimCommand.Kind.BUILD, [builder] as Array[int],
-			{"type": type_key, "cx": found.x, "cy": found.y})
-	ctx.status.call("building %s" % ctx.label_of(type_key))
-	_on_back()
+	var best_d2 := 0
+	for v: Dictionary in sim.vents():
+		if v["taken"]:
+			continue
+		var vcx: int = v["cx"]
+		var vcy: int = v["cy"]
+		if s["requires_territory"] and not sim.territory_covers(
+				ctx.local_player,
+				vcx * SimGrid.CELL + v["w"] * SimGrid.CELL / 2,
+				vcy * SimGrid.CELL + v["h"] * SimGrid.CELL / 2):
+			continue
+		var dx: int = Fixed.to_int(px) - (vcx + v["w"] / 2) / SimGrid.PATH_SUBDIV
+		var dy: int = Fixed.to_int(py) - (vcy + v["h"] / 2) / SimGrid.PATH_SUBDIV
+		var d2 := dx * dx + dy * dy
+		if found.x == -1 or d2 < best_d2:
+			best_d2 = d2
+			found = Vector2i(vcx, vcy)
+	return found
 
 
+## Spiral out from the pin for an auto-placement cell. The player asked for
+## breathing room, so a footprint with a clear `CLEARANCE`-cell margin on all
+## sides (no pathing choke) wins; inside-influence is preferred at equal
+## distance (cheaper for the Hive). Falls back to the nearest merely-legal
+## footprint when nothing roomy is in range. Legality is judged on what the
+## player can see — fogged cells count as free; the sim settles it at landing.
 func _spiral_search(type_key: int, w: int, h: int, c0x: int, c0y: int) -> Vector2i:
 	var requires: bool = ctx.sim.catalog.sim_of(type_key)["requires_territory"]
-	var fallback := Vector2i(-1, -1)
+	var tight := Vector2i(-1, -1) # nearest legal footprint without the clear ring
 	for r in range(0, 25):
+		var clear := Vector2i(-1, -1)
+		var clear_inside := Vector2i(-1, -1)
 		for pos in _ring_positions(c0x, c0y, r):
 			if not _predict_legal(type_key, pos.x, pos.y, w, h):
 				continue
-			var center_x := pos.x * SimGrid.CELL + w * SimGrid.CELL / 2
-			var center_y := pos.y * SimGrid.CELL + h * SimGrid.CELL / 2
-			if ctx.sim.territory_covers(ctx.local_player, center_x, center_y):
-				return pos # inside influence wins at the smallest radius
-			if fallback.x == -1 and not requires:
-				fallback = pos # requires_territory builds have no fallback
-	return fallback
+			var inside := _site_inside(type_key, pos.x, pos.y, w, h)
+			if requires and not inside:
+				continue # requires_territory builds only place inside influence
+			if tight.x == -1:
+				tight = pos
+			if _predict_clear(type_key, pos.x, pos.y, w, h, CLEARANCE):
+				if inside and clear_inside.x == -1:
+					clear_inside = pos
+				elif clear.x == -1:
+					clear = pos
+		# A clear spot at this radius is the nearest one; prefer inside influence.
+		if clear_inside.x != -1:
+			return clear_inside
+		if clear.x != -1:
+			return clear
+	return tight
+
+
+## True if the footprint's center sits inside the player's territory influence.
+func _site_inside(type_key: int, cx: int, cy: int, w: int, h: int) -> bool:
+	return ctx.sim.territory_covers(ctx.local_player,
+			cx * SimGrid.CELL + w * SimGrid.CELL / 2,
+			cy * SimGrid.CELL + h * SimGrid.CELL / 2)
 
 
 func _ring_positions(cx: int, cy: int, r: int) -> Array[Vector2i]:
@@ -448,6 +491,26 @@ func _predict_legal(type_key: int, cx: int, cy: int, w: int, h: int) -> bool:
 		return false
 	for fy in range(cy, cy + h):
 		for fx in range(cx, cx + w):
+			if sim.is_cell_visible(ctx.local_player, fx, fy) \
+					and sim.grid.is_blocked(fx, fy):
+				return false
+	return true
+
+
+## Like _predict_legal but also requires a `margin`-cell ring around the
+## footprint to be in-bounds and clear, so the building leaves a pathing lane on
+## every side. Fog counts as free; only visibly-blocked cells fail.
+func _predict_clear(type_key: int, cx: int, cy: int, w: int, h: int,
+		margin: int) -> bool:
+	var sim := ctx.sim
+	var x0 := cx - margin
+	var y0 := cy - margin
+	var x1 := cx + w + margin
+	var y1 := cy + h + margin
+	if x0 < 0 or y0 < 0 or x1 > sim.grid.width or y1 > sim.grid.height:
+		return false
+	for fy in range(y0, y1):
+		for fx in range(x0, x1):
 			if sim.is_cell_visible(ctx.local_player, fx, fy) \
 					and sim.grid.is_blocked(fx, fy):
 				return false

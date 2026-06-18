@@ -2,9 +2,11 @@ extends SceneTree
 ## Headless checks for the M4 Rebel worker harvest economy (design_m4.md §3 /
 ## §16): exact harvest fill rate and capacity, depot deposit + conservation,
 ## throughput shared ascending-id, worker death drops carry, direct vent vs
-## Refinery (rate + cap + linked vents), the dial reconcile (role counts,
-## auto-replace, manual MINE nudge). The synthetic catalog below is tuned so
-## harvest_rate is 1.0/tick and capacities are small whole numbers.
+## Refinery (rate + cap + linked vents), and the per-worker work_state model
+## (§3.2): SET_ECONOMY reassigns the auto pool to the requested counts,
+## saturation spreads harvesters across nodes, MINE re-enlists, a MOVE ejects
+## to MANUAL, and auto-replace restores the dead worker's state. The synthetic
+## catalog below is tuned so harvest_rate is 1.0/tick and caps are small.
 ##
 ## Run on the host:
 ##   flatpak run org.godotengine.Godot --headless --path . \
@@ -20,9 +22,17 @@ func _initialize() -> void:
 	_test_worker_death_drops_carry()
 	_test_direct_vent()
 	_test_refinery()
-	_test_dial_reconcile_counts()
+	_test_split_reassign_counts()
+	_test_saturation_spread()
+	_test_auto_skips_unseen()
+	_test_manual_eject()
 	_test_auto_replace()
-	_test_mine_nudges_dial()
+	_test_train_raises_target()
+	_test_mine_reenlists()
+	_test_per_stronghold_replenish()
+	_test_homogeneous_fresh_assignment()
+	_test_target_persists_through_death()
+	_test_mine_repools_to_expansion()
 
 	if failures == 0:
 		print("rebel_economy_check: OK")
@@ -134,11 +144,11 @@ func _worker_near(sim: Sim, ref: SimEntity, dx_tiles: int, dy_tiles: int) -> Sim
 	return sim.entities[sim.spawn_unit(1, x, y, _key(sim, "r.worker"))]
 
 
-func _count_role(sim: Sim, role: int) -> int:
+func _count_state(sim: Sim, state: int) -> int:
 	var n := 0
 	for id in sim.entities:
 		var e: SimEntity = sim.entities[id]
-		if e.is_unit() and sim._is_worker(e) and e.harvest_role == role:
+		if e.is_unit() and sim._is_worker(e) and e.work_state == state:
 			n += 1
 	return n
 
@@ -243,20 +253,89 @@ func _test_refinery() -> void:
 	_expect(w.carry_kind == CatalogSchema.ResourceKind.FLUX, "refinery carry is flux")
 
 
-func _test_dial_reconcile_counts() -> void:
+func _test_split_reassign_counts() -> void:
 	var sim := _sim()
 	var hq: SimEntity = sim.entities[sim.spawn_structure(1, 10, 10, _key(sim, "r.hq"))]
 	for i in 4:
 		_worker_near(sim, hq, 5 + i, 0)
-	# build_mine_ratio 0.5 -> reserve 2; alloy_flux_ratio 0.5 -> 1 alloy, 1 flux.
+	# Per stronghold now: target 4 workers, alloy_side 2 (of which 1 build), flux
+	# side 2 (of which 1 build): expect 1 ALLOY_BUILD, 1 ALLOY, 1 FLUX, 1 FLUX_BUILD.
 	var c := SimCommand.new(1, SimCommand.Kind.SET_ECONOMY)
-	c.params = {"build_mine_ratio": Fixed.HALF, "alloy_flux_ratio": Fixed.HALF}
+	c.targets = [hq.id]
+	c.params = {"worker_target": 4, "alloy_side": 2, "alloy_build": 1, "flux_build": 1}
 	sim.schedule(c)
 	for _t in Sim.COMMAND_DELAY + 1:
 		sim.step()
-	_expect(_count_role(sim, 1) == 1, "1 alloy harvester (got %d)" % _count_role(sim, 1))
-	_expect(_count_role(sim, 2) == 1, "1 flux harvester (got %d)" % _count_role(sim, 2))
-	_expect(_count_role(sim, 0) == 2, "2 build-reserve (got %d)" % _count_role(sim, 0))
+	_expect(_count_state(sim, SimEntity.WorkState.ALLOY_BUILD) == 1,
+			"1 alloy+build (got %d)" % _count_state(sim, SimEntity.WorkState.ALLOY_BUILD))
+	_expect(_count_state(sim, SimEntity.WorkState.ALLOY) == 1,
+			"1 alloy (got %d)" % _count_state(sim, SimEntity.WorkState.ALLOY))
+	_expect(_count_state(sim, SimEntity.WorkState.FLUX) == 1,
+			"1 flux (got %d)" % _count_state(sim, SimEntity.WorkState.FLUX))
+	_expect(_count_state(sim, SimEntity.WorkState.FLUX_BUILD) == 1,
+			"1 flux+build (got %d)" % _count_state(sim, SimEntity.WorkState.FLUX_BUILD))
+
+
+func _test_saturation_spread() -> void:
+	var sim := _sim()
+	# Two slow deposits (throughput 1.0/tick ⇒ saturation cap 1 worker each).
+	var d1: SimEntity = sim.entities[sim.spawn_resource(20, 20, _key(sim, "r.slow_deposit"))]
+	var d2: SimEntity = sim.entities[sim.spawn_resource(28, 20, _key(sim, "r.slow_deposit"))]
+	# Both workers spawn next to d1, both on Alloy — greedy-nearest would pile
+	# them on d1; saturation must push the second onto d2.
+	var w1 := _worker_near(sim, d1, 2, 0)
+	var w2 := _worker_near(sim, d1, 1, 0)
+	for w: SimEntity in [w1, w2]:
+		w.work_state = SimEntity.WorkState.ALLOY
+		w.harvest_state = SimEntity.HarvestState.IDLE
+	# Reveal the deposits: auto-mining only picks nodes the player has seen.
+	sim._recompute_vision()
+	sim.step()
+	_expect(w1.assigned_source != 0 and w2.assigned_source != 0,
+			"both workers picked a deposit")
+	_expect(w1.assigned_source != w2.assigned_source,
+			"saturation spread the two workers across both deposits")
+	_expect(d2.id in [w1.assigned_source, w2.assigned_source],
+			"the second worker took the farther, unsaturated deposit")
+
+
+func _test_auto_skips_unseen() -> void:
+	var sim := _sim()
+	# A seen deposit by the worker and an unseen one far outside its sight.
+	var near: SimEntity = sim.entities[sim.spawn_resource(12, 10, _key(sim, "r.deposit"))]
+	var far: SimEntity = sim.entities[sim.spawn_resource(44, 10, _key(sim, "r.deposit"))]
+	var w: SimEntity = sim.entities[sim.spawn_unit(1, 10 * Fixed.ONE, 10 * Fixed.ONE, _key(sim, "r.worker"))]
+	w.work_state = SimEntity.WorkState.ALLOY
+	w.harvest_state = SimEntity.HarvestState.IDLE
+	# Run past a vision recompute so the near deposit is discovered.
+	for _t in 8:
+		sim.step()
+	var p: SimPlayer = sim.players[1]
+	_expect(near.id in p.discovered_resources, "the in-sight deposit was discovered")
+	_expect(not (far.id in p.discovered_resources),
+			"the far deposit was never seen, so never discovered")
+	_expect(w.assigned_source == near.id,
+			"auto-mining took the seen deposit, never the unseen one (got %d)"
+			% w.assigned_source)
+
+
+func _test_manual_eject() -> void:
+	var sim := _sim()
+	var hq: SimEntity = sim.entities[sim.spawn_structure(1, 10, 10, _key(sim, "r.hq"))]
+	sim.spawn_resource(16, 12, _key(sim, "r.deposit"))
+	var w := _worker_near(sim, hq, 6, 0)
+	w.work_state = SimEntity.WorkState.ALLOY
+	# A player MOVE ejects the worker from the economy to MANUAL (§3.2).
+	var c := SimCommand.new(1, SimCommand.Kind.MOVE)
+	c.targets = [w.id]
+	c.params = {"x": hq.x + 8 * Fixed.ONE, "y": hq.y}
+	sim.schedule(c)
+	for _t in Sim.COMMAND_DELAY + 5:
+		sim.step()
+	_expect(w.work_state == SimEntity.WorkState.MANUAL,
+			"MOVE ejected the worker to MANUAL")
+	_expect(w.assigned_source == 0,
+			"the economy left the manual worker alone (no source assigned)")
 
 
 func _test_auto_replace() -> void:
@@ -264,36 +343,146 @@ func _test_auto_replace() -> void:
 	var hq: SimEntity = sim.entities[sim.spawn_structure(1, 10, 10, _key(sim, "r.hq"))]
 	_worker_near(sim, hq, 6, 0)
 	_worker_near(sim, hq, 7, 0)
+	# Per-stronghold target now: keep 3 at this HQ.
 	var c := SimCommand.new(1, SimCommand.Kind.SET_ECONOMY)
+	c.targets = [hq.id]
 	c.params = {"worker_target": 3}
 	sim.schedule(c)
 	for _t in Sim.COMMAND_DELAY + 1:
 		sim.step()
-	# Two live + one queued reaches the target of three.
-	_expect(sim._queued_workers(1) == 1,
-			"auto-replace queued one worker toward the target (got %d)"
-			% sim._queued_workers(1))
-	_expect(hq.train_queue.size() == 1, "the HQ holds the queued replacement")
+	# Two live + one queued reaches the HQ's target of three.
+	_expect(hq.worker_target == 3, "the HQ holds the keep-target")
+	_expect(hq.train_queue.size() == 1, "the HQ queued one worker toward its target")
 
 
-func _test_mine_nudges_dial() -> void:
+func _test_train_raises_target() -> void:
+	var sim := _sim(1000)
+	var hq: SimEntity = sim.entities[sim.spawn_structure(1, 10, 10, _key(sim, "r.hq"))]
+	var before := hq.worker_target
+	# A player-issued TRAIN of a worker bumps THAT stronghold's keep-target so the
+	# new worker joins its pool (§3.2); auto-replace trains do not (see above).
+	var c := SimCommand.new(1, SimCommand.Kind.TRAIN)
+	c.targets = [hq.id]
+	c.params = {"type": _key(sim, "r.worker")}
+	sim.schedule(c)
+	for _t in Sim.COMMAND_DELAY + 1:
+		sim.step()
+	_expect(hq.worker_target == before + 1,
+			"player TRAIN of a worker raised the HQ keep-target (got %d, was %d)"
+			% [hq.worker_target, before])
+
+
+func _test_mine_reenlists() -> void:
 	var sim := _sim()
 	var vent: SimEntity = sim.entities[sim.spawn_resource(20, 20, _key(sim, "r.vent"))]
 	var w1 := _worker_near(sim, vent, 4, 0)
-	_worker_near(sim, vent, 0, 4)  # a second worker so the share is 1/2
-	var p: SimPlayer = sim.players[1]
-	_expect(p.alloy_flux_ratio == Fixed.ONE, "ratio starts all-alloy")
+	# Pulled out of the economy (as a MOVE would leave it), then told to mine.
+	w1.work_state = SimEntity.WorkState.MANUAL
 	var c := SimCommand.new(1, SimCommand.Kind.MINE)
 	c.targets = [w1.id]
 	c.params = {"node": vent.id}
 	sim.schedule(c)
 	for _t in Sim.COMMAND_DELAY + 1:
 		sim.step()
-	# One of two workers ordered onto flux nudges the ratio down by 1/2.
-	_expect(p.alloy_flux_ratio == Fixed.HALF,
-			"MINE nudged alloy_flux_ratio to 0.5 (got %d)" % p.alloy_flux_ratio)
-	# No per-unit pin (§3.2): the dial moved, so the reconcile now keeps one
-	# flux harvester where the fleet was all-alloy before.
-	_expect(_count_role(sim, 2) == 1,
-			"the nudge produced one flux harvester (got %d)" % _count_role(sim, 2))
-	_expect(w1 != null, "ordered worker still exists")
+	# MINE re-enlists the MANUAL worker onto the tapped resource's side (§3.2).
+	_expect(w1.work_state == SimEntity.WorkState.FLUX,
+			"MINE re-enlisted the worker onto Flux (got %d)" % w1.work_state)
+	_expect(w1.assigned_source == vent.id, "MINE pinned the worker to the vent")
+
+
+func _count_home(sim: Sim, depot_id: int) -> int:
+	var n := 0
+	for id in sim.entities:
+		var e: SimEntity = sim.entities[id]
+		if e.hp > 0 and sim._is_worker(e) and e.home_depot == depot_id:
+			n += 1
+	return n
+
+
+func _set_economy(sim: Sim, depot: SimEntity, target: int, alloy: int,
+		alloy_build: int, flux_build: int) -> void:
+	var c := SimCommand.new(1, SimCommand.Kind.SET_ECONOMY)
+	c.targets = [depot.id]
+	c.params = {"worker_target": target, "alloy_side": alloy,
+			"alloy_build": alloy_build, "flux_build": flux_build}
+	sim.schedule(c)
+
+
+## (1) Each stronghold replenishes toward ITS OWN target, training at itself.
+func _test_per_stronghold_replenish() -> void:
+	var sim := _sim(1000)
+	var hq1: SimEntity = sim.entities[sim.spawn_structure(1, 8, 8, _key(sim, "r.hq"))]
+	var hq2: SimEntity = sim.entities[sim.spawn_structure(1, 36, 36, _key(sim, "r.hq"))]
+	_worker_near(sim, hq1, 6, 0)
+	_worker_near(sim, hq2, 6, 0)
+	_set_economy(sim, hq1, 2, 2, 0, 0)
+	_set_economy(sim, hq2, 2, 2, 0, 0)
+	for _t in 60:
+		sim.step()
+	_expect(_count_home(sim, hq1.id) == 2,
+			"HQ1 filled to its own target of 2 (got %d)" % _count_home(sim, hq1.id))
+	_expect(_count_home(sim, hq2.id) == 2,
+			"HQ2 filled to its own target of 2 (got %d)" % _count_home(sim, hq2.id))
+
+
+## (3) A homogeneous base (all one resource, >1 worker) grows new workers on the
+## same side, not balancing them to the empty side.
+func _test_homogeneous_fresh_assignment() -> void:
+	var sim := _sim(1000)
+	var hq: SimEntity = sim.entities[sim.spawn_structure(1, 10, 10, _key(sim, "r.hq"))]
+	_worker_near(sim, hq, 6, 0)
+	_worker_near(sim, hq, 7, 0)
+	_set_economy(sim, hq, 2, 2, 0, 0)  # both on Alloy
+	for _t in Sim.COMMAND_DELAY + 1:
+		sim.step()
+	# Hand-train a third worker at this all-Alloy base.
+	var c := SimCommand.new(1, SimCommand.Kind.TRAIN)
+	c.targets = [hq.id]
+	c.params = {"type": _key(sim, "r.worker")}
+	sim.schedule(c)
+	for _t in Sim.COMMAND_DELAY + 1:
+		sim.step()
+	_expect(hq.worker_target == 3, "target grew to 3 (got %d)" % hq.worker_target)
+	_expect(hq.eco_alloy == 3,
+			"the homogeneous base grew on the Alloy side (eco_alloy %d)" % hq.eco_alloy)
+
+
+## (4) The economy target is independent of the live worker count: losing every
+## worker leaves the target and split untouched (the slider doesn't move).
+func _test_target_persists_through_death() -> void:
+	var sim := _sim(1000)
+	var hq: SimEntity = sim.entities[sim.spawn_structure(1, 10, 10, _key(sim, "r.hq"))]
+	var a := _worker_near(sim, hq, 6, 0)
+	var b := _worker_near(sim, hq, 7, 0)
+	_set_economy(sim, hq, 2, 1, 0, 0)  # 1 Alloy, 1 Flux
+	for _t in Sim.COMMAND_DELAY + 1:
+		sim.step()
+	_expect(hq.worker_target == 2 and hq.eco_alloy == 1, "target/split applied")
+	a.hp = 0
+	b.hp = 0
+	sim.step()
+	_expect(hq.worker_target == 2,
+			"killing every worker did not change the keep-target (got %d)" % hq.worker_target)
+	_expect(hq.eco_alloy == 1,
+			"the allocation persisted through total loss (eco_alloy %d)" % hq.eco_alloy)
+
+
+## (2) A MINE order onto a node in another base's region moves the worker to that
+## base's pool (so it mines and hauls there, not back across the map).
+func _test_mine_repools_to_expansion() -> void:
+	var sim := _sim()
+	var hq1: SimEntity = sim.entities[sim.spawn_structure(1, 8, 8, _key(sim, "r.hq"))]
+	var hq2: SimEntity = sim.entities[sim.spawn_structure(1, 36, 36, _key(sim, "r.hq"))]
+	var node: SimEntity = sim.entities[sim.spawn_resource(38, 30, _key(sim, "r.deposit"))]
+	var w := _worker_near(sim, hq1, 6, 0)
+	sim.step()  # home depots assigned
+	_expect(w.home_depot == hq1.id, "worker starts homed to HQ1 (got %d)" % w.home_depot)
+	var c := SimCommand.new(1, SimCommand.Kind.MINE)
+	c.targets = [w.id]
+	c.params = {"node": node.id}
+	sim.schedule(c)
+	for _t in Sim.COMMAND_DELAY + 1:
+		sim.step()
+	_expect(w.home_depot == hq2.id,
+			"MINE moved the worker to the expansion's pool (got %d)" % w.home_depot)
+	_expect(w.assigned_source == node.id, "MINE pinned the worker to the node")

@@ -51,7 +51,7 @@ class WidgetDef:
 
 const WIDGET_TYPES := ["button", "label", "structure_grid", "unit_grid",
 		"queue_strip", "alloc_sliders", "minimap", "group_roster",
-		"worker_dials", "stance_picker"]
+		"worker_dials", "stance_picker", "build_targets"]
 
 
 ## command id -> CommandDef
@@ -204,6 +204,10 @@ func validate() -> PackedStringArray:
 					and widget.params.get("mode", "jump") not in ["jump", "pick"]:
 				errors.append("screen '%s': bad minimap mode '%s'"
 						% [screen_id, widget.params.get("mode")])
+			if widget.type == "build_targets" \
+					and widget.params.get("minimap_mode", "pick") not in ["jump", "pick"]:
+				errors.append("screen '%s': bad build_targets minimap_mode '%s'"
+						% [screen_id, widget.params.get("minimap_mode")])
 			if widget.type == "structure_grid":
 				var place: String = widget.params.get("placement_screen", "")
 				if place.is_empty() or not console_screens.has(place):

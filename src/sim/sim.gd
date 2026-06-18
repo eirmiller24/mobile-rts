@@ -23,9 +23,19 @@ const COMMAND_DELAY := 3
 ## is 200 ms — invisible at fog scale; the relief valve if profiling
 ## disagrees with the budget.
 const VISION_PERIOD := 4
-## Orders for this many units or fewer get per-unit A* paths; larger
-## groups share one flow field per destination.
+## Orders for this many units or fewer get per-unit A* (lazy theta*) paths;
+## larger groups would share one flow field per destination — but only when
+## USE_FLOW_FIELDS is on.
 const SMALL_GROUP := 3
+## Pathing mode. When false (current default), EVERY order routes per-unit with
+## lazy theta*, whatever the group size — orders resolve instantly with no
+## command-tick wait. When true, groups larger than SMALL_GROUP share a flow
+## field built incrementally over a few ticks. Playtest 2026-06-18: the
+## flow-field path made large-group orders feel laggy (units held for the build),
+## so theta*-for-all is the default; the flow-field machinery is left intact and
+## re-enables by flipping this back to true. (design.md "Pathfinding and
+## movement"; the GDExtension port makes per-unit theta* cheap at scale.)
+const USE_FLOW_FIELDS := false
 ## A move order completes within this distance of the goal (fixed).
 const ARRIVE_DIST := SimGrid.CELL
 ## A path waypoint is considered reached within this distance (fixed). Theta*
@@ -132,6 +142,18 @@ func _init(seed_value: int, p_catalog: CompiledCatalog, map: MapData) -> void:
 						obj["type_key"], obj["completed"])
 			"resource":
 				spawn_resource(obj["cx"], obj["cy"], obj["type_key"])
+	# Seed each STRONGHOLD's worker economy from the workers it starts with:
+	# assign every worker to its nearest depot, then tally that base's keep-target
+	# and Alloy/Flux/build split, so each base auto-replaces and allocates on its
+	# own from turn one (design_m4.md §3.2 playtest).
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if _is_worker(e) and e.hp > 0:
+			e.home_depot = _nearest_depot(e)
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind == SimEntity.Kind.STRUCTURE and _is_depot(e):
+			_reseed_depot_target(e)
 	_recompute_vision()
 
 
@@ -186,6 +208,10 @@ func spawn_unit(player: int, x: int, y: int, type_key: int) -> int:
 	e.step = int(s["speed"]) / TICK_RATE
 	e.crit_base = s["crit_base"]
 	e.crit_bonus = s["crit_bonus"]
+	# Default to mining Alloy; _production_system / map-seeding / re-enlist set the
+	# real per-stronghold role once the worker has a home depot (§3.2 playtest).
+	if _is_worker(e):
+		e.work_state = SimEntity.WorkState.ALLOY
 	entities[e.id] = e
 	return e.id
 
@@ -310,6 +336,13 @@ func _execute(cmd: SimCommand) -> void:
 				e.path_i = 0
 				e.goal_key = -1
 				e.target_id = 0
+				# A deliberate Stop ejects a worker from the economy (§3.2).
+				if _is_worker(e):
+					e.build_target = 0
+					e.wall_target_cell = -1
+					e.harvest_state = SimEntity.HarvestState.IDLE
+					e.assigned_source = 0
+					e.work_state = SimEntity.WorkState.MANUAL
 		SimCommand.Kind.BUILD:
 			_execute_build(cmd)
 		SimCommand.Kind.ALLOCATE_ECONOMY:
@@ -437,21 +470,25 @@ func _build_mechanic_for(builder: SimEntity, type: int) -> int:
 	return -1
 
 
-## Worker build (design_m4.md §4.1): validate on visible, free, reachable
-## ground (no fog gamble), reserve the cost, spawn the structure GROWING but
-## frozen (needs_builder) — it blocks its footprint and presents
-## `construction` armor at once — then send the worker to raise it.
+## Worker build (design_m4.md §4.1): validate the ground is actually free,
+## reserve the cost, spawn the structure GROWING but frozen (needs_builder) —
+## it blocks its footprint and presents `construction` armor at once — then
+## send the worker to walk over and raise it.
+##
+## Playtest 2026-06-18: a worker CAN be ordered to build on free ground it
+## can't currently see — it walks there and raises it (the Rebel mirror of the
+## Hive's capsule-into-fog gamble: you commit a body, not a guess). Only ground
+## that is truly occupied is refused; the pathing grid reflects real occupancy
+## regardless of fog, so a clear unseen spot builds and an occupied one no-ops.
 func _execute_worker_build(player_id: int, builder: SimEntity, type: int,
 		cx: int, cy: int, w: int, h: int) -> void:
 	var player: SimPlayer = players.get(player_id)
 	if player == null:
 		return
 	var s := catalog.sim_of(type)
-	# Occupancy + vision: a worker can only be ordered onto ground the player
-	# can see is free (the asymmetry with the Hive's fog gamble).
 	for fy in range(cy, cy + h):
 		for fx in range(cx, cx + w):
-			if grid.is_blocked(fx, fy) or not is_cell_visible(player_id, fx, fy):
+			if grid.is_blocked(fx, fy):
 				return
 	if player.alloy < Fixed.from_int(s["cost_alloy"]) \
 			or player.flux < Fixed.from_int(s["cost_flux"]):
@@ -549,8 +586,9 @@ func _order_move(cmd: SimCommand) -> void:
 	if units.is_empty():
 		return
 	var queued: bool = cmd.params.get("queue", false)
-	# A player-issued order pulls a worker off its current task (harvest/build/
-	# wall, design_m4.md §4.1); internal sim moves (harvest/build travel) don't.
+	# A player-issued MOVE/ATTACK pulls a worker off its task AND ejects it from
+	# the economy to MANUAL — an ordinary commandable unit (design_m4.md §3.2);
+	# internal sim moves (harvest/build travel, rally) don't.
 	if not cmd.params.get("internal", false):
 		for e in units:
 			e.build_target = 0
@@ -558,7 +596,11 @@ func _order_move(cmd: SimCommand) -> void:
 			if _is_worker(e):
 				e.harvest_state = SimEntity.HarvestState.IDLE
 				e.assigned_source = 0
-	var small := units.size() <= SMALL_GROUP
+				e.work_state = SimEntity.WorkState.MANUAL
+	# Flow fields are off by default, so every order routes per-unit with lazy
+	# theta* regardless of size (no command-tick wait); flip USE_FLOW_FIELDS to
+	# restore shared fields for large groups.
+	var small := not USE_FLOW_FIELDS or units.size() <= SMALL_GROUP
 	var tx: int = clampi(cmd.params.get("x", 0),
 			SimGrid.CELL / 2, grid.world_w() - SimGrid.CELL / 2)
 	var ty: int = clampi(cmd.params.get("y", 0),
@@ -843,8 +885,31 @@ func _movement_system() -> void:
 		if e.is_underground() or e.morph_ticks_left > 0:
 			continue # burrowed/mid-morph units don't move (§4.8)
 		var o: Dictionary = e.orders[0]
-		if o["kind"] == SimCommand.Kind.ATTACK_MOVE and _engaged(e):
-			continue # stand and fight
+		# Attack-move combat movement (design_m4.md §9.1/§9.3):
+		#  - Skirmish never stops to fight: it keeps advancing toward the goal
+		#    and fires opportunistically (handled by combat), so fall through.
+		#  - Everyone else stands and fights a target already in attack range,
+		#    and (unless planted by hold_position) moves to engage an acquired
+		#    but out-of-range target directly — a proper attack-move runs INTO
+		#    the army it meets instead of marching past it to the goal.
+		if o["kind"] == SimCommand.Kind.ATTACK_MOVE \
+				and e.stance != CatalogSchema.Stance.SKIRMISH:
+			if _engaged(e):
+				continue # stand and fight
+			if not (e.tactic_flags & CatalogSchema.TacticFlag.HOLD_POSITION):
+				var at: SimEntity = entities.get(e.target_id) if e.target_id != 0 else null
+				if at != null and at.hp > 0 and _can_target(e, at) \
+						and _in_range(e, at, e.acquire_range, false):
+					var adx := at.x - e.x
+					var ady := at.y - e.y
+					var ad := _length(adx, ady)
+					if ad > 0:
+						var st := _steer_around(e, adx, ady, ad)
+						var sd := _length(st.x, st.y)
+						if sd > 0:
+							e.x += st.x * e.step / sd
+							e.y += st.y * e.step / sd
+					continue
 		# Near the shared goal, retarget to this unit's personal surround
 		# slot: a short A* leg that wraps around the obstacle if the slot
 		# is on the far side.
@@ -1387,6 +1452,8 @@ func _reap() -> void:
 		var e: SimEntity = entities[id]
 		if e.hp > 0:
 			continue
+		# (A dead worker's role is restored by auto-replace gap-filling its
+		# home stronghold's most-deficient role, §3.2 playtest — no FIFO needed.)
 		if e.blocks:
 			grid.unblock_rect(e.foot_x, e.foot_y, e.foot_w, e.foot_h)
 		entities.erase(id)
@@ -1425,7 +1492,18 @@ func _execute_train(cmd: SimCommand) -> void:
 		return
 	player.alloy -= Fixed.from_int(s["cost_alloy"])
 	player.flux -= Fixed.from_int(s["cost_flux"])
-	e.train_queue.append({"type": type, "left": s["train_time"]})
+	var entry := {"type": type, "left": s["train_time"]}
+	# Auto-replace tags which stronghold this worker refills, so it joins that
+	# base's pool wherever it's trained (§3.2 playtest).
+	var replace_depot: int = cmd.params.get("replace_depot", 0)
+	if replace_depot != 0:
+		entry["replace_depot"] = replace_depot
+	e.train_queue.append(entry)
+	# A player-ordered worker raises THIS stronghold's keep-target by one (on the
+	# side it should grow, §3.2 playtest); an auto-replace train must not bump it.
+	if catalog.sim_of(type)["carry_capacity"] > 0 \
+			and not cmd.params.get("auto_replace", false) and _is_depot(e):
+		_grow_depot_target(e)
 
 
 func _execute_cancel(cmd: SimCommand) -> void:
@@ -1497,11 +1575,24 @@ func _production_system() -> void:
 		var ux := grid.cell_center(cell % grid.width)
 		var uy := grid.cell_center(cell / grid.width)
 		var uid := spawn_unit(e.player, ux, uy, head["type"])
+		var nw: SimEntity = entities[uid]
+		if _is_worker(nw):
+			# Join a stronghold and fill its most-needed role: the base this train
+			# was replacing for (auto-replace), else the training base / nearest
+			# depot (a fresh, hand-trained worker) (§3.2 playtest).
+			var hd: int = head.get("replace_depot", 0)
+			nw.home_depot = hd if entities.has(hd) else \
+					(e.id if _is_depot(e) else _nearest_depot(nw))
+			var depot: SimEntity = entities.get(nw.home_depot)
+			if depot != null:
+				nw.work_state = _gap_fill_state(depot) as SimEntity.WorkState
 		e.train_queue.pop_front()
 		if e.rally_x != 0 or e.rally_y != 0:
 			var rally := SimCommand.new(e.player, SimCommand.Kind.MOVE)
 			rally.targets = [uid]
-			rally.params = {"x": e.rally_x, "y": e.rally_y}
+			# Internal: a rally is automatic, so it must not eject a fresh worker
+			# to MANUAL (§3.2) — workers rally then fall into the economy.
+			rally.params = {"x": e.rally_x, "y": e.rally_y, "internal": true}
 			_order_move(rally)
 
 
@@ -1540,6 +1631,12 @@ func _execute_ability(cmd: SimCommand) -> void:
 			or catalog.kind_of(ability) != "ability":
 		return
 	var ab := catalog.sim_of(ability)
+	# Toggle abilities sync the whole group to one state instead of blindly
+	# flipping each unit (so a mixed selection of Carapaces all root/uproot
+	# together) — handled as a batch (design_m4.md §9 playtest fix).
+	if ab["ability_kind"] == CatalogSchema.AbilityKind.TOGGLE_MORPH:
+		_execute_toggle_group(ability, ab, _own_units(cmd))
+		return
 	for e in _own_units(cmd):
 		if e.is_underground() or e.morph_ticks_left > 0:
 			continue
@@ -1548,13 +1645,6 @@ func _execute_ability(cmd: SimCommand) -> void:
 		if e.ability_cooldowns.get(ability, 0) > 0:
 			continue
 		match ab["ability_kind"]:
-			CatalogSchema.AbilityKind.TOGGLE_MORPH:
-				# No cooldown — the morph time is the cost.
-				e.morph_ticks_left = ab["morph_time"]
-				e.orders.clear()
-				e.path = PackedInt32Array()
-				e.goal_key = -1
-				e.target_id = 0
 			CatalogSchema.AbilityKind.BLINK:
 				var tx: int = clampi(cmd.params.get("x", e.x),
 						SimGrid.CELL / 2, grid.world_w() - SimGrid.CELL / 2)
@@ -1575,6 +1665,42 @@ func _execute_ability(cmd: SimCommand) -> void:
 				e.target_id = 0
 			_:
 				pass # auras are passive; build runs through BUILD (§4.5)
+
+
+## Drive a group of toggle-morph units to a single shared state instead of
+## flipping each blindly (the playtest fix): the target state is the majority
+## current state among the units that can act, ties resolved to ON (morphed) —
+## so a group split evenly between rooted and uprooted Carapaces all root, and
+## one that is mostly rooted all uproots. Only units not already in the target
+## state morph; iteration is ascending id (from _own_units) for determinism.
+func _execute_toggle_group(ability: int, ab: Dictionary,
+		units: Array[SimEntity]) -> void:
+	var eligible: Array[SimEntity] = []
+	for e in units:
+		if e.is_underground() or e.morph_ticks_left > 0:
+			continue
+		if ability not in _abilities_of(e):
+			continue
+		if e.ability_cooldowns.get(ability, 0) > 0:
+			continue
+		eligible.append(e)
+	if eligible.is_empty():
+		return
+	var on_count := 0
+	for e in eligible:
+		if e.morphed:
+			on_count += 1
+	# Tie (off >= on) turns the group ON; a clear on-majority turns it OFF.
+	var target_on := (eligible.size() - on_count) >= on_count
+	for e in eligible:
+		if e.morphed == target_on:
+			continue # already in the desired state
+		# No cooldown — the morph time is the cost.
+		e.morph_ticks_left = ab["morph_time"]
+		e.orders.clear()
+		e.path = PackedInt32Array()
+		e.goal_key = -1
+		e.target_id = 0
 
 
 ## Per-tick unit status: ability cooldowns, morph transitions, and
@@ -1665,10 +1791,6 @@ func _surface(e: SimEntity) -> void:
 # --- unit AI: stances, tactics, patrol (design_m4.md §9) ----------------------
 
 
-## A unit is "ranged" for the skirmish/kite rule (design_m4.md §9.1).
-const RANGED_THRESHOLD := Fixed.ONE * 2
-
-
 func _execute_set_tactic(cmd: SimCommand) -> void:
 	var has_stance: bool = cmd.params.has("stance")
 	var stance: int = cmd.params.get("stance", 0)
@@ -1696,6 +1818,11 @@ func _execute_patrol(cmd: SimCommand) -> void:
 	for e in units:
 		e.build_target = 0
 		e.wall_target_cell = -1
+		# Patrol is a unit order: a worker leaves the economy (§3.2).
+		if _is_worker(e):
+			e.harvest_state = SimEntity.HarvestState.IDLE
+			e.assigned_source = 0
+			e.work_state = SimEntity.WorkState.MANUAL
 		var bx: int = clampi(cmd.params.get("x", e.x),
 				SimGrid.CELL / 2, grid.world_w() - SimGrid.CELL / 2)
 		var by: int = clampi(cmd.params.get("y", e.y),
@@ -1742,15 +1869,10 @@ func _stance_system() -> void:
 					_step_toward(e, t.x, t.y)
 			CatalogSchema.Stance.DEFENSIVE:
 				_stance_defensive(e, t, has_target)
-			CatalogSchema.Stance.SKIRMISH:
-				if has_target and e.attack_range > RANGED_THRESHOLD:
-					var kmin: int = catalog.globals["kite_min_distance"]
-					var dx := t.x - e.x
-					var dy := t.y - e.y
-					if Fixed.mul(dx, dx) + Fixed.mul(dy, dy) < Fixed.mul(kmin, kmin):
-						_step_away(e, t.x, t.y)  # too close: back off, keep firing
 			_:
-				pass  # BALANCED == M3
+				pass  # BALANCED == M3. SKIRMISH is an attack-move modifier
+				# (keep advancing toward the goal, fire opportunistically — see
+				# _movement_system); idle with no goal it just fires in place.
 
 
 func _stance_defensive(e: SimEntity, t: SimEntity, has_target: bool) -> void:
@@ -1780,20 +1902,6 @@ func _step_toward(e: SimEntity, tx: int, ty: int) -> void:
 	else:
 		e.x += dx * e.step / d
 		e.y += dy * e.step / d
-	e.x = clampi(e.x, e.radius, grid.world_w() - e.radius)
-	e.y = clampi(e.y, e.radius, grid.world_h() - e.radius)
-	_push_out_of_blocked(e)
-
-
-func _step_away(e: SimEntity, tx: int, ty: int) -> void:
-	var dx := e.x - tx
-	var dy := e.y - ty
-	var d := _length(dx, dy)
-	if d == 0:
-		dx = Fixed.ONE
-		d = Fixed.ONE
-	e.x += dx * e.step / d
-	e.y += dy * e.step / d
 	e.x = clampi(e.x, e.radius, grid.world_w() - e.radius)
 	e.y = clampi(e.y, e.radius, grid.world_h() - e.radius)
 	_push_out_of_blocked(e)
@@ -1969,77 +2077,172 @@ const HARVEST_REACH := SimGrid.CELL * 2  # extra slack on top of radii (fixed)
 
 
 func _worker_economy_system() -> void:
-	var pids := players.keys()
-	pids.sort()
-	for pid in pids:
-		_reconcile_economy(pid)
+	# Each worker belongs to a stronghold: ensure every living worker has a valid
+	# home depot (its nearest when unset or when its old one died) before the
+	# auto-replace / harvest / draft passes consult it (design_m4.md §3.2
+	# playtest — workers stick to their own base, not any depot's resources).
+	for id in _sorted_ids():
+		var w: SimEntity = entities[id]
+		if _is_worker(w) and w.hp > 0:
+			_ensure_home_depot(w)
+	# Per-stronghold auto-replace: each depot refills toward ITS OWN worker_target.
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind == SimEntity.Kind.STRUCTURE and _functional(e) and _is_depot(e) \
+				and e.worker_target > 0:
+			_auto_replace_depot(e)
 	# Harvest pass: ascending worker id, so per-node throughput sharing is
 	# ascending-id by construction. budget: node id -> remaining fixed/tick.
+	# MANUAL workers are out of the economy — they obey their orders like any
+	# unit (design_m4.md §3.2).
 	var budget := {}
 	for id in _sorted_ids():
 		var w: SimEntity = entities[id]
-		if not _is_worker(w) or w.hp <= 0 or w.build_target != 0:
+		if not _is_worker(w) or w.hp <= 0 or w.build_target != 0 \
+				or w.is_manual_worker():
 			continue
 		_harvest_tick(w, budget)
 
 
-## Turn a player's dials into target task counts and reconcile assignments
-## (§3.2): build reserve, then the harvest pool split by alloy_flux_ratio.
-## Also auto-replaces losses toward worker_target.
-func _reconcile_economy(pid: int) -> void:
-	var p: SimPlayer = players.get(pid)
-	if p == null:
-		return
-	var workers: Array[int] = []
+func _is_depot(e: SimEntity) -> bool:
+	return e.kind == SimEntity.Kind.STRUCTURE \
+			and catalog.sim_of(e.type_key).get("is_depot", false)
+
+
+## Seed a depot's economy target from the workers currently assigned to it (map
+## load): keep that many, split by their current roles (§3.2 playtest).
+func _reseed_depot_target(depot: SimEntity) -> void:
+	var alloy := 0
+	var alloy_b := 0
+	var flux := 0
+	var flux_b := 0
+	for id in entities:
+		var w: SimEntity = entities[id]
+		if w.hp <= 0 or not _is_worker(w) or w.home_depot != depot.id \
+				or w.is_manual_worker():
+			continue
+		match w.work_state:
+			SimEntity.WorkState.ALLOY: alloy += 1
+			SimEntity.WorkState.ALLOY_BUILD: alloy_b += 1
+			SimEntity.WorkState.FLUX: flux += 1
+			SimEntity.WorkState.FLUX_BUILD: flux_b += 1
+	depot.worker_target = alloy + alloy_b + flux + flux_b
+	depot.eco_alloy = alloy + alloy_b
+	depot.eco_alloy_build = alloy_b
+	depot.eco_flux_build = flux_b
+
+
+## Train one worker toward this depot's worker_target, counting its live workers
+## plus any queued worker that will home to it (§3.2 playtest).
+func _auto_replace_depot(depot: SimEntity) -> void:
+	var count := 0
+	for id in entities:
+		var w: SimEntity = entities[id]
+		if w.hp > 0 and _is_worker(w) and w.home_depot == depot.id:
+			count += 1
+		elif w.kind == SimEntity.Kind.STRUCTURE and w.player == depot.player:
+			for q: Dictionary in w.train_queue:
+				if catalog.sim_of(q["type"])["carry_capacity"] > 0 \
+						and _queued_worker_home(w, q) == depot.id:
+					count += 1
+	if depot.worker_target > count:
+		_queue_replacement_at(depot)
+
+
+## Which depot a queued worker will belong to on spawn (mirrors the assignment in
+## _production_system): its tagged replace_depot, else the training base if that
+## is a depot, else the nearest depot.
+func _queued_worker_home(struct: SimEntity, entry: Dictionary) -> int:
+	var rd: int = entry.get("replace_depot", 0)
+	if rd != 0 and entities.has(rd):
+		return rd
+	return struct.id if _is_depot(struct) else _nearest_depot(struct)
+
+
+## Reassign a depot's non-MANUAL workers to its stored Alloy/Flux/build split
+## (a one-shot on slider release, §3.2): ascending id, by the target thresholds,
+## any workers beyond the target falling to Alloy. Mid-task workers self-correct
+## via the harvest machine (a side switch finishes the carry, then re-picks).
+func _apply_worker_split_to_depot(depot: SimEntity) -> void:
+	var pool: Array[int] = []
 	for id in _sorted_ids():
 		var e: SimEntity = entities[id]
-		if e.hp > 0 and e.player == pid and _is_worker(e):
-			workers.append(id)
-	# Auto-replace: train toward worker_target counting live + queued (§3.2).
-	if p.worker_target > workers.size() + _queued_workers(pid):
-		_queue_replacement_worker(pid)
-	var n := workers.size()
-	if n == 0:
-		return
-	var reserve := clampi(_scale_count(n, p.build_mine_ratio), 0, n)
-	var pool := n - reserve
-	var desired_alloy := clampi(_scale_count(pool, p.alloy_flux_ratio), 0, pool)
-	var qa := desired_alloy
-	var qf := pool - desired_alloy
-	# Assign by ascending id: lowest ids fill alloy then flux, the rest are
-	# build reserve. Stable while counts hold; surplus sheds from the high
-	# ids (the design's "take the highest-id worker" reduces to this).
-	for wid in workers:
-		var w: SimEntity = entities[wid]
-		if qa > 0:
-			w.harvest_role = 1
-			qa -= 1
-		elif qf > 0:
-			w.harvest_role = 2
-			qf -= 1
+		if e.hp > 0 and _is_worker(e) and e.home_depot == depot.id \
+				and not e.is_manual_worker():
+			pool.append(id)
+	var l := depot.eco_alloy_build
+	var c := depot.eco_alloy
+	var wt := depot.worker_target
+	var fb := depot.eco_flux_build
+	for i in pool.size():
+		var w: SimEntity = entities[pool[i]]
+		if i < l:
+			w.work_state = SimEntity.WorkState.ALLOY_BUILD
+		elif i < c:
+			w.work_state = SimEntity.WorkState.ALLOY
+		elif i < wt - fb:
+			w.work_state = SimEntity.WorkState.FLUX
+		elif i < wt:
+			w.work_state = SimEntity.WorkState.FLUX_BUILD
 		else:
-			w.harvest_role = 0  # build reserve / idle near base
+			w.work_state = SimEntity.WorkState.ALLOY  # beyond target: overflow to Alloy
 
 
-## round_half_up(n * ratio) for a fixed ratio in [0,1].
-func _scale_count(n: int, ratio_fixed: int) -> int:
-	return (n * ratio_fixed + Fixed.HALF) >> Fixed.SHIFT
+## The role a new/replacement worker takes at a depot: the state most under that
+## depot's stored target given its current live workers (so a raided line refills
+## in role, §3.2). Defaults to Alloy when nothing is deficient.
+func _gap_fill_state(depot: SimEntity) -> int:
+	var want_ab := depot.eco_alloy_build
+	var want_a := maxi(0, depot.eco_alloy - depot.eco_alloy_build)
+	var flux_total := maxi(0, depot.worker_target - depot.eco_alloy)
+	var want_fb := mini(depot.eco_flux_build, flux_total)
+	var want_f := flux_total - want_fb
+	var have := {SimEntity.WorkState.ALLOY: 0, SimEntity.WorkState.ALLOY_BUILD: 0,
+			SimEntity.WorkState.FLUX: 0, SimEntity.WorkState.FLUX_BUILD: 0}
+	for id in entities:
+		var w: SimEntity = entities[id]
+		if w.hp > 0 and _is_worker(w) and w.home_depot == depot.id \
+				and not w.is_manual_worker() and have.has(w.work_state):
+			have[w.work_state] += 1
+	# Largest deficit wins; ties resolved by this fixed order (mining before build).
+	var cand := [
+		[SimEntity.WorkState.ALLOY, want_a - have[SimEntity.WorkState.ALLOY]],
+		[SimEntity.WorkState.FLUX, want_f - have[SimEntity.WorkState.FLUX]],
+		[SimEntity.WorkState.ALLOY_BUILD, want_ab - have[SimEntity.WorkState.ALLOY_BUILD]],
+		[SimEntity.WorkState.FLUX_BUILD, want_fb - have[SimEntity.WorkState.FLUX_BUILD]],
+	]
+	var best: int = SimEntity.WorkState.ALLOY
+	var best_def := 0
+	for c: Array in cand:
+		if c[1] > best_def:
+			best_def = c[1]
+			best = c[0]
+	return best
+
+
+## Grow a stronghold's keep-target by one when the player hand-trains a worker
+## there, on the side it should grow: a homogeneous base (all one resource, with
+## more than one worker already) stays homogeneous; otherwise balance to the
+## smaller side, Alloy on a tie (§3.2 playtest, request: "assume that's where
+## they want those workers").
+func _grow_depot_target(depot: SimEntity) -> void:
+	var old_target := depot.worker_target
+	var old_alloy := depot.eco_alloy
+	var old_flux := old_target - old_alloy
+	var add_alloy: bool
+	if old_target > 1 and old_flux == 0 and old_alloy > 0:
+		add_alloy = true
+	elif old_target > 1 and old_alloy == 0 and old_flux > 0:
+		add_alloy = false
+	else:
+		add_alloy = old_alloy <= old_flux
+	depot.worker_target += 1
+	if add_alloy:
+		depot.eco_alloy += 1
 
 
 func _is_worker(e: SimEntity) -> bool:
 	return e.is_unit() and catalog.sim_of(e.type_key)["carry_capacity"] > 0
-
-
-func _queued_workers(pid: int) -> int:
-	var count := 0
-	for id in entities:
-		var e: SimEntity = entities[id]
-		if e.player != pid or e.kind != SimEntity.Kind.STRUCTURE:
-			continue
-		for q: Dictionary in e.train_queue:
-			if catalog.sim_of(q["type"])["carry_capacity"] > 0:
-				count += 1
-	return count
 
 
 ## A trainable worker unit type for the player (lowest type_key), or -1.
@@ -2050,19 +2253,27 @@ func _worker_type_for(pid: int) -> int:
 	return -1
 
 
-## Queue one replacement worker at the shortest-queue eligible structure;
-## a no-op (silently) if unaffordable or Crew-capped — the normal TRAIN
-## reservation path does the checks.
-func _queue_replacement_worker(pid: int) -> void:
-	var wt := _worker_type_for(pid)
+## Queue one replacement worker for a stronghold: trained at the depot itself
+## when it can train workers, else at the player's shortest worker queue, but
+## tagged to join THIS depot's pool (§3.2 playtest). A silent no-op if
+## unaffordable or Crew-capped — the TRAIN reservation path does the checks.
+func _queue_replacement_at(depot: SimEntity) -> void:
+	var wt := _worker_type_for(depot.player)
 	if wt < 0:
 		return
-	var st := train_structure_for(pid, wt)
+	var st := 0
+	if depot.train_queue.size() < TRAIN_QUEUE_MAX \
+			and wt in catalog.sim_of(depot.type_key)["trains"]:
+		st = depot.id
+	else:
+		st = train_structure_for(depot.player, wt)
 	if st == 0:
 		return
-	var c := SimCommand.new(pid, SimCommand.Kind.TRAIN)
+	var c := SimCommand.new(depot.player, SimCommand.Kind.TRAIN)
 	c.targets = [st]
-	c.params = {"type": wt}
+	# auto_replace: refills toward the target, must not raise it; replace_depot:
+	# the spawned worker joins this base wherever it's trained.
+	c.params = {"type": wt, "auto_replace": true, "replace_depot": depot.id}
 	_execute_train(c)
 
 
@@ -2070,9 +2281,10 @@ func _queue_replacement_worker(pid: int) -> void:
 func _harvest_tick(w: SimEntity, budget: Dictionary) -> void:
 	match w.harvest_state:
 		SimEntity.HarvestState.IDLE:
-			if w.harvest_role == 0:
-				return  # build reserve waits near base (drawn by §4)
-			var src := _pick_source(w, w.harvest_role)
+			var role := w.mine_role()
+			if role == 0:
+				return  # MANUAL — out of the economy (the pass skips it anyway)
+			var src := _pick_source(w, role)
 			if src == 0:
 				return
 			w.assigned_source = src
@@ -2084,8 +2296,8 @@ func _harvest_tick(w: SimEntity, budget: Dictionary) -> void:
 				w.assigned_source = 0
 				w.harvest_state = SimEntity.HarvestState.IDLE
 				return
-			# Role changed under us (dials moved) — drop and re-pick.
-			if not _source_matches_role(src, w.harvest_role):
+			# Mining side changed under us (slider moved) — drop and re-pick.
+			if not _source_matches_role(src, w.mine_role()):
 				w.assigned_source = 0
 				w.harvest_state = SimEntity.HarvestState.IDLE
 				return
@@ -2108,6 +2320,8 @@ func _harvest_tick(w: SimEntity, budget: Dictionary) -> void:
 			if w.carry <= 0:
 				w.harvest_state = SimEntity.HarvestState.IDLE
 				return
+			# Deposit at the NEAREST own depot — alloy/flux is one shared player
+			# pool, so this is just the shortest walk (design_m4.md §3.2 playtest).
 			var depot := _nearest_depot(w)
 			if depot == 0:
 				return  # nowhere to drop off; hold the carry
@@ -2169,26 +2383,31 @@ func _source_matches_role(src: SimEntity, role: int) -> bool:
 	return _role_of_source(src) == role
 
 
-## Nearest valid source for the role (path-agnostic center distance, ties to
-## lowest id). FLUX prefers a Refinery over a raw vent when one is available
-## (§3.1). Returns entity id or 0.
+## Auto-mining stays home: an auto-pool worker only picks a source within
+## AUTO_MINE_RADIUS of ITS OWN home depot (the stronghold it belongs to), and
+## hauls back to that depot — so workers stick to their own base instead of
+## roaming to the contested middle or another stronghold's line (the playtest
+## fix). To work distant resources, build a forward HQ/Refinery (workers trained
+## there adopt it as home) or hand-order a worker with MINE (which pins a node
+## directly, ignoring the radius — that trip is yours to command).
+const AUTO_MINE_RADIUS := SimGrid.CELL * 24  # fixed world units (~24 cells)
+
+
+## Nearest valid source for the role, within the home radius, spread across
+## nodes by saturation (design_m4.md §3.2): prefer the nearest node not yet
+## filled to the worker count its throughput supports, so a fleet fans out
+## instead of crowding the closest deposit; fall back to the nearest in-radius
+## node if all are saturated. FLUX prefers a Refinery over a raw vent when one
+## is available (§3.1). Ties to lowest id. Returns entity id or 0.
 func _pick_source(w: SimEntity, role: int) -> int:
+	if role == 2:
+		var refinery := _nearest_refinery(w)
+		if refinery != 0:
+			return refinery
 	var best := 0
 	var best_d2 := 0x7FFFFFFFFFFFFFF
-	if role == 2:
-		# Prefer refineries: scan them first; only fall back to raw vents if
-		# none has flux available.
-		for id in _sorted_ids():
-			var e: SimEntity = entities[id]
-			if e.kind == SimEntity.Kind.STRUCTURE and e.player == w.player \
-					and catalog.sim_of(e.type_key).get("is_refinery", false) \
-					and _valid_source(e):
-				var d2 := _entity_dist2(w, e)
-				if d2 < best_d2:
-					best_d2 = d2
-					best = id
-		if best != 0:
-			return best
+	var fallback := 0
+	var fallback_d2 := 0x7FFFFFFFFFFFFFF
 	for id in _sorted_ids():
 		var e: SimEntity = entities[id]
 		if not e.is_resource():
@@ -2199,23 +2418,108 @@ func _pick_source(w: SimEntity, role: int) -> int:
 			continue
 		if not _valid_source(e):
 			continue
+		if not _discovered_resource(w.player, e.id):
+			continue
+		if not _within_home_radius(e, w):
+			continue
 		var d2 := _entity_dist2(w, e)
-		if d2 < best_d2:
-			best_d2 = d2
-			best = id
-	return best
+		if d2 < fallback_d2:
+			fallback_d2 = d2
+			fallback = id
+		if _node_assignees(e.id, w.player) < _node_saturation(w, e):
+			if d2 < best_d2:
+				best_d2 = d2
+				best = id
+	return best if best != 0 else fallback
 
 
-## Nearest COMPLETE is_depot structure of the worker's player, ties to lowest
-## id (§3.1). 0 if the player has no depot.
-func _nearest_depot(w: SimEntity) -> int:
+## Has `pid` ever seen this resource node (§3.2/§6.4)? Auto-mining requires it.
+func _discovered_resource(pid: int, res_id: int) -> bool:
+	var p: SimPlayer = players.get(pid)
+	return p != null and res_id in p.discovered_resources
+
+
+## Within AUTO_MINE_RADIUS of THIS worker's home depot (design_m4.md §3.2
+## playtest): auto-mining stays home so a worker doesn't roam to another
+## stronghold's resources. With no home depot at all (no depot exists yet /
+## fixtures) there is no restriction.
+func _within_home_radius(src: SimEntity, w: SimEntity) -> bool:
+	var d: SimEntity = entities.get(w.home_depot)
+	if d == null:
+		return true
+	var dx := src.x - d.x
+	var dy := src.y - d.y
+	return Fixed.mul(dx, dx) + Fixed.mul(dy, dy) \
+			<= Fixed.mul(AUTO_MINE_RADIUS, AUTO_MINE_RADIUS)
+
+
+## Assign / refresh a worker's home depot: keep a valid current one, otherwise
+## adopt the nearest own functional depot (its base on spawn; a survivor if its
+## old base died). Sticky — a worker doesn't drift home just by wandering.
+func _ensure_home_depot(w: SimEntity) -> void:
+	var d: SimEntity = entities.get(w.home_depot) if w.home_depot != 0 else null
+	if d != null and _functional(d) and d.player == w.player \
+			and catalog.sim_of(d.type_key).get("is_depot", false):
+		return
+	w.home_depot = _nearest_depot(w)
+
+
+## Nearest own COMPLETE Refinery with flux still available (§3.1) and within
+## the home radius, or 0.
+func _nearest_refinery(w: SimEntity) -> int:
 	var best := 0
 	var best_d2 := 0x7FFFFFFFFFFFFFF
 	for id in _sorted_ids():
 		var e: SimEntity = entities[id]
 		if e.kind == SimEntity.Kind.STRUCTURE and e.player == w.player \
-				and _functional(e) and catalog.sim_of(e.type_key).get("is_depot", false):
+				and catalog.sim_of(e.type_key).get("is_refinery", false) \
+				and _valid_source(e) and _within_home_radius(e, w):
 			var d2 := _entity_dist2(w, e)
+			if d2 < best_d2:
+				best_d2 = d2
+				best = id
+	return best
+
+
+## How many of the player's workers are currently assigned to this node.
+func _node_assignees(node_id: int, pid: int) -> int:
+	var count := 0
+	for id in entities:
+		var e: SimEntity = entities[id]
+		if e.hp > 0 and e.player == pid and _is_worker(e) \
+				and e.assigned_source == node_id:
+			count += 1
+	return count
+
+
+## Worker count a node's throughput supports for worker `w` (at least 1) —
+## the saturation cap the spread fills each node to before piling on the next.
+func _node_saturation(w: SimEntity, node: SimEntity) -> int:
+	var tp_per_tick: int = catalog.sim_of(node.type_key)["throughput"] / TICK_RATE
+	var rate := _harvest_rate_for(w, node)
+	if rate <= 0:
+		return 1
+	return maxi(1, tp_per_tick / rate)
+
+
+## Nearest COMPLETE is_depot structure of the worker's player, ties to lowest
+## id (§3.1). 0 if the player has no depot.
+func _nearest_depot(w: SimEntity) -> int:
+	return _nearest_depot_pos(w.player, w.x, w.y)
+
+
+## Nearest COMPLETE own is_depot structure to a point (fixed), ties to lowest id.
+## 0 if the player has no functional depot.
+func _nearest_depot_pos(pid: int, x: int, y: int) -> int:
+	var best := 0
+	var best_d2 := 0x7FFFFFFFFFFFFFF
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.kind == SimEntity.Kind.STRUCTURE and e.player == pid \
+				and _functional(e) and catalog.sim_of(e.type_key).get("is_depot", false):
+			var dx := e.x - x
+			var dy := e.y - y
+			var d2 := Fixed.mul(dx, dx) + Fixed.mul(dy, dy)
 			if d2 < best_d2:
 				best_d2 = d2
 				best = id
@@ -2326,60 +2630,69 @@ func _move_to_entity(w: SimEntity, t: SimEntity) -> void:
 # --- MINE / SET_ECONOMY (design_m4.md §3.2, §12) ------------------------------
 
 
-## Manual harvest order: assign workers to a node and nudge the dials toward
-## that resource (no per-unit pin — the dials are the whole truth, §3.2).
+## Manual harvest / re-enlist order (an *economy* order, design_m4.md §3.2).
+## A resource/Refinery target puts the worker on that side, pins it to the node,
+## AND moves it to the pool of the base nearest that node (so a worker sent to an
+## expansion joins it and deposits there — the playtest fix). An own HQ/depot tap
+## re-enlists the worker to that base, gap-filling its most-needed role. Either
+## way a MANUAL worker rejoins.
 func _execute_mine(cmd: SimCommand) -> void:
 	var node: SimEntity = entities.get(cmd.params.get("node", 0))
 	var role := _role_of_source(node)
-	if role == 0:
-		return
-	var n := 0
 	for w in _own_units(cmd):
 		if not _is_worker(w):
 			continue
-		w.assigned_source = node.id
-		w.harvest_role = role
-		if w.carry > 0:
-			w.harvest_state = SimEntity.HarvestState.TO_DEPOT
+		w.build_target = 0
+		if role == 1 or role == 2:
+			# Join the stronghold whose zone the node sits in (nearest own depot
+			# to the node), so the worker repools to the expansion and hauls there.
+			var hd := _nearest_depot_pos(cmd.player_id, node.x, node.y)
+			if hd != 0:
+				w.home_depot = hd
+			w.work_state = SimEntity.WorkState.ALLOY if role == 1 \
+					else SimEntity.WorkState.FLUX
+			w.assigned_source = node.id
+			if w.carry > 0:
+				w.harvest_state = SimEntity.HarvestState.TO_DEPOT
+			else:
+				w.harvest_state = SimEntity.HarvestState.TO_SOURCE
+				_move_to_entity(w, node)
 		else:
-			w.harvest_state = SimEntity.HarvestState.TO_SOURCE
-			_move_to_entity(w, node)
-		n += 1
-	if n > 0:
-		_nudge_alloy_flux(cmd.player_id, role, n)
+			# Tap an own depot: re-enlist at that base, filling its needed role.
+			var depot := w.home_depot
+			if node != null and node.player == cmd.player_id and _is_depot(node):
+				w.home_depot = node.id
+				depot = node.id
+			var d: SimEntity = entities.get(depot)
+			w.work_state = (_gap_fill_state(d) if d != null \
+					else SimEntity.WorkState.ALLOY) as SimEntity.WorkState
+			w.assigned_source = 0
+			w.harvest_state = SimEntity.HarvestState.IDLE
 
 
-## Bias alloy_flux_ratio toward the manually-ordered resource by the ordered
-## workers' share of the fleet (§3.2). How far is a tuning question (§18);
-## this is the simple share-proportional nudge.
-func _nudge_alloy_flux(pid: int, role: int, n: int) -> void:
-	var p: SimPlayer = players.get(pid)
-	if p == null:
-		return
-	var total := 0
-	for id in entities:
-		var e: SimEntity = entities[id]
-		if e.hp > 0 and e.player == pid and _is_worker(e):
-			total += 1
-	if total <= 0:
-		return
-	var share := Fixed.div(Fixed.from_int(n), Fixed.from_int(total))
-	if role == 1:
-		p.alloy_flux_ratio = mini(Fixed.ONE, p.alloy_flux_ratio + share)
-	else:
-		p.alloy_flux_ratio = maxi(0, p.alloy_flux_ratio - share)
-
-
+## The Economy slider, now PER STRONGHOLD (design_m4.md §3.2 playtest): the
+## command targets one depot (targets[0]) and sets its keep-target + Alloy/Flux/
+## build split, which persist independent of the live worker count, then reassigns
+## that base's current workers to match. auto_repair is the one global dial and
+## may arrive target-less.
 func _execute_set_economy(cmd: SimCommand) -> void:
 	var p: SimPlayer = players.get(cmd.player_id)
 	if p == null:
 		return
-	p.worker_target = maxi(0, cmd.params.get("worker_target", p.worker_target))
-	p.alloy_flux_ratio = clampi(cmd.params.get("alloy_flux_ratio",
-			p.alloy_flux_ratio), 0, Fixed.ONE)
-	p.build_mine_ratio = clampi(cmd.params.get("build_mine_ratio",
-			p.build_mine_ratio), 0, Fixed.ONE)
 	p.auto_repair = cmd.params.get("auto_repair", p.auto_repair)
+	if cmd.targets.is_empty():
+		return
+	var depot: SimEntity = entities.get(cmd.targets[0])
+	if depot == null or depot.player != cmd.player_id or not _is_depot(depot):
+		return
+	if cmd.params.has("worker_target"):
+		depot.worker_target = maxi(0, cmd.params.get("worker_target", depot.worker_target))
+	if cmd.params.has("alloy_side"):
+		depot.eco_alloy = clampi(cmd.params.get("alloy_side", 0), 0, depot.worker_target)
+		depot.eco_alloy_build = clampi(cmd.params.get("alloy_build", 0), 0, depot.eco_alloy)
+		depot.eco_flux_build = clampi(cmd.params.get("flux_build", 0),
+				0, depot.worker_target - depot.eco_alloy)
+	_apply_worker_split_to_depot(depot)
 
 
 # --- worker build + repair (design_m4.md §4) ----------------------------------
@@ -2548,26 +2861,39 @@ func _wall_system() -> void:
 			p.wall_type = -1
 
 
-## Nearest free worker to a cell (build-reserve preferred over harvesters,
-## §3.2), ties to lowest id. Free = not already building or claiming a wall.
+## Nearest free worker to a cell for auto construction (drawn walls), draftable
+## (_BUILD) workers preferred over plain miners, ties to lowest id (§3.2).
+## MANUAL workers are excluded — they are the player's to command. Free = not
+## already building or claiming a wall.
 func _nearest_available_builder(pid: int, cell: int) -> SimEntity:
 	var cx := grid.cell_center(cell % grid.width)
 	var cy := grid.cell_center(cell / grid.width)
 	var best: SimEntity = null
-	var best_key := [1, 0x7FFFFFFFFFFFFFF]  # [is_harvester, dist2]; reserve wins
+	var best_key := [1, 0x7FFFFFFFFFFFFFF]  # [not_draftable, dist2]; draftable wins
 	for id in _sorted_ids():
 		var w: SimEntity = entities[id]
 		if not w.is_unit() or w.hp <= 0 or w.player != pid or not _is_worker(w):
 			continue
+		if w.is_manual_worker():
+			continue
 		if w.build_target != 0 or w.wall_target_cell != -1:
 			continue
+		# Don't pull a worker off across the map: only draft it for a cell within
+		# its home stronghold's radius (design_m4.md §3.2 playtest).
+		var hd: SimEntity = entities.get(w.home_depot)
+		if hd != null:
+			var hx := cx - hd.x
+			var hy := cy - hd.y
+			if Fixed.mul(hx, hx) + Fixed.mul(hy, hy) \
+					> Fixed.mul(AUTO_MINE_RADIUS, AUTO_MINE_RADIUS):
+				continue
 		var dx := cx - w.x
 		var dy := cy - w.y
 		var d2 := Fixed.mul(dx, dx) + Fixed.mul(dy, dy)
-		var is_harv := 0 if w.harvest_role == 0 else 1
-		if is_harv < best_key[0] or (is_harv == best_key[0] and d2 < best_key[1]):
+		var tier := 0 if w.build_draftable() else 1
+		if tier < best_key[0] or (tier == best_key[0] and d2 < best_key[1]):
 			best = w
-			best_key = [is_harv, d2]
+			best_key = [tier, d2]
 	return best
 
 
@@ -2876,6 +3202,17 @@ func _recompute_vision() -> void:
 				if _within_dist(det.x, det.y, cap.x, cap.y, det.sight):
 					_stamp_entity_tiles(vis, cap)
 		_vision[pid] = vis
+		# Record any resource node now in sight as permanently discovered, so
+		# auto-mining never targets a node still in unexplored fog (§3.2/§6.4).
+		var p: SimPlayer = players.get(pid)
+		if p != null:
+			for id in _sorted_ids():
+				var res: SimEntity = entities[id]
+				if not res.is_resource() or res.id in p.discovered_resources:
+					continue
+				if is_cell_visible(pid, res.foot_x + res.foot_w / 2,
+						res.foot_y + res.foot_h / 2):
+					p.discovered_resources.append(res.id)
 
 
 ## Per-build-tile LOS height from standing structures (design_m4.md §6.5),
@@ -3108,16 +3445,56 @@ func buildable_structures(player: int) -> PackedInt32Array:
 	return result
 
 
-## The builder a BUILD command should name for this type: the first
-## functional structure whose build ability sells it (lowest id), 0 if
-## none. The UI resolves *who* before the command exists (§4.9).
-func builder_for(player: int, type_key: int) -> int:
+## The builder a BUILD command should name for this type, 0 if none. The UI
+## resolves *who* before the command exists (§4.9). Among eligible builders
+## (functional, carry the build ability) the nearest to the site wins, ranked
+## by tier so a worker build prefers a build-draftable worker, then a plain
+## miner, then (last) a worker pulled into manual control — without ever
+## disturbing the Hive's capsule builder (a structure, always tier 0). With no
+## site given (cx<0) this reduces to lowest-id, the old behavior.
+func builder_for(player: int, type_key: int, cx: int = -1, cy: int = -1) -> int:
+	var sx := grid.cell_center(cx) if cx >= 0 else 0
+	var sy := grid.cell_center(cy) if cy >= 0 else 0
+	var best := 0
+	var best_key := [3, 0x7FFFFFFFFFFFFFF]  # [tier, dist2]
 	for id in _sorted_ids():
 		var e: SimEntity = entities[id]
-		if e.player == player and _functional(e) \
-				and _build_ability_for(e, type_key):
-			return id
-	return 0
+		if e.player != player or not _functional(e) \
+				or not _build_ability_for(e, type_key):
+			continue
+		var tier := 0
+		if _is_worker(e):
+			if e.is_manual_worker():
+				tier = 2
+			elif not e.build_draftable():
+				tier = 1
+		var d2 := 0
+		if cx >= 0:
+			var dx := sx - e.x
+			var dy := sy - e.y
+			d2 = Fixed.mul(dx, dx) + Fixed.mul(dy, dy)
+		if tier < best_key[0] or (tier == best_key[0] and d2 < best_key[1]):
+			best = id
+			best_key = [tier, d2]
+	return best
+
+
+## Why a BUILD of `type_key` would be refused right now, "" if it should go
+## through — so the HUD can speak instead of the sim silently dropping the
+## command (the playtest "nothing happens" gap, §13). Occupancy/visibility is
+## already gated by the placement ghost; this covers builder + affordability.
+func build_block_reason(player: int, type_key: int) -> String:
+	if builder_for(player, type_key) == 0:
+		return "no worker free to build"
+	var p: SimPlayer = players.get(player)
+	if p == null:
+		return ""
+	var s := catalog.sim_of(type_key)
+	if p.alloy < Fixed.from_int(s["cost_alloy"]):
+		return "need %d alloy" % s["cost_alloy"]
+	if p.flux < Fixed.from_int(s["cost_flux"]):
+		return "need %d flux" % s["cost_flux"]
+	return ""
 
 
 ## Unit types trainable right now (union of `trains` across the player's
@@ -3165,6 +3542,34 @@ func stronghold_ids(player: int) -> PackedInt32Array:
 				and catalog.sim_of(e.type_key)["nano_pool"] > 0:
 			result.append(id)
 	return result
+
+
+## The player's depot structures (Rebel Economy tab rows — one worker slider per
+## stronghold), ascending id. Each carries its own worker_target + split.
+func depot_ids(player: int) -> PackedInt32Array:
+	var result := PackedInt32Array()
+	for id in _sorted_ids():
+		var e: SimEntity = entities[id]
+		if e.player == player and _functional(e) and _is_depot(e):
+			result.append(id)
+	return result
+
+
+## Read-only snapshot of a depot's worker economy for the Economy widget:
+## {target, alloy, alloy_build, flux_build, live} (live = current workers homed
+## here). Empty if the id isn't a live depot.
+func depot_economy(depot_id: int) -> Dictionary:
+	var d: SimEntity = entities.get(depot_id)
+	if d == null or not _is_depot(d):
+		return {}
+	var live := 0
+	for id in entities:
+		var w: SimEntity = entities[id]
+		if w.hp > 0 and _is_worker(w) and w.home_depot == depot_id:
+			live += 1
+	return {"target": d.worker_target, "alloy": d.eco_alloy,
+			"alloy_build": d.eco_alloy_build, "flux_build": d.eco_flux_build,
+			"live": live}
 
 
 ## Structures of a player that can train units, with their queues

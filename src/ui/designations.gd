@@ -56,14 +56,17 @@ func set_group(slot: int, ids: Array[int]) -> int:
 	return slot
 
 
-## Pin a sim-space location. Returns the slot, or -1 when full.
-func add_location(x: int, y: int) -> int:
+## Pin a sim-space location. An explicit `name` labels notable pins (home base,
+## enemy start); otherwise an auto-numbered "Pin N" is minted. Returns the slot,
+## or -1 when full.
+func add_location(x: int, y: int, name: String = "") -> int:
 	var slot := _first_free()
 	if slot == -1:
 		return -1
-	slots[slot] = {"kind": "location", "name": "Pin %d" % _next_pin,
-			"x": x, "y": y}
-	_next_pin += 1
+	if name.is_empty():
+		name = "Pin %d" % _next_pin
+		_next_pin += 1
+	slots[slot] = {"kind": "location", "name": name, "x": x, "y": y}
 	changed.emit()
 	return slot
 
