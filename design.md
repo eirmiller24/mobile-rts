@@ -15,7 +15,7 @@ These are the tests every feature has to pass:
 
 1. **You are the commander.** The player can drop to micro when it matters, but the game is built around giving intent ("hold this choke", "max out gas mining") and trusting your army to execute. If a feature requires APM to be viable, it's wrong for this game.
 2. **Touch-native, never ported.** Every interaction is designed for fingers on glass first. No feature ships if it only works with a mouse.
-3. **The editor is the game.** All official maps and modes are built in the World Editor. If the editor can't express something we want to ship, the editor gets extended, not bypassed.
+3. **The editor is the game.** All official maps and modes are built from the same *data* the editor edits — catalogs, maps, and trigger scripts — so if we want to ship something, the data formats and the trigger language must express it, not engine code. (v1 authors that data directly as text/JSON + script; the graphical editor is a post-v1 milestone — see Roadmap. The pillar is that content is data, which holds whether a GUI or a text file is the pen.)
 4. **Asymmetry over content volume.** Two factions that play genuinely differently beat four factions that are reskins.
 
 
@@ -23,7 +23,7 @@ These are the tests every feature has to pass:
 
 Decisions locked in here shape everything else, so they go near the top.
 
-- **Engine:** Godot 4.6, standard build (GDScript, no .NET). We start pure GDScript; the sim core moves to GDExtension (C++) around M6 — M2 profiling settled this from "if profiling demands it" to "planned" (see "The GDExtension port" below).
+- **Engine:** Godot 4.6, standard build (GDScript, no .NET). We start pure GDScript; the sim core moves to GDExtension (C++) **in M5** — M2 profiling settled this from "if profiling demands it" to "planned," and the M5 trigger VM pulled it earlier still, so the VM is written once in C++ (see "The GDExtension port" below).
 - **Rendering:** 3D world with a fixed-angle perspective camera (WC3/SC2 style), using Godot's Mobile renderer. 3D gives us smooth zoom/rotate, terrain height, and the "standing on the bridge" feel. Asset pipeline is Blender → glTF.
 - **Simulation:** Deterministic lockstep. The sim is a pure, headless GDScript module that advances in fixed ticks and is fed only commands. The 3D scene is a *view* of the sim, never the sim itself. This is what makes multiplayer cheap (commands on the wire, not state), makes replays free, and keeps mobile bandwidth tiny.
 - **Orientation:** Landscape. The side control buttons and bottom console assume thumbs on both edges of a horizontally-held phone.
@@ -63,11 +63,11 @@ Chance-based effects (crits, bash-style procs) don't roll flat probabilities. Li
 
 Normal structures occupy whole build tiles. **Defensive barricades are the exception:** because this is a touch game, walls are *drawn* — select "build wall", drag a stroke on the map, and the stroke rasterizes into a chain of wall segments. Tile-sized segments would look terrible, so wall segments snap to the finer pathing grid (one pathing cell each). Each segment is otherwise an ordinary structure — own hp, attackable, blocks pathing, dies independently (so the enemy chews a hole in your wall, not the whole wall). Consequence for all footprint code, editor included: footprints are stored in *pathing cells*, not build tiles, and nothing may assume a structure is at least a tile big.
 
-### The GDExtension port (planned, ~M6)
+### The GDExtension port (M5)
 
-The M2 measurements settled "if profiling demands it": pure GDScript holds ~150 units in heavy combat, not the 300 the budget asks for. The port is now *planned*, targeted around M6 — Android export is when 3–4× slower mobile CPUs meet real armies, and multiplayer turns dropped ticks from cosmetic into a sync problem. Until then GDScript comfortably carries M3–M5.
+The M2 measurements settled "if profiling demands it": pure GDScript holds ~150 units in heavy combat, not the 300 the budget asks for. The port lands in **M5**, ahead of the trigger runtime — the M5 trigger VM is sim code, and writing it once in C++ (rather than in GDScript and immediately re-porting it) is what pulls the port to M5 from its original ~M6 slot. Android export is also where 3–4× slower mobile CPUs meet real armies, and M6 multiplayer turns dropped ticks from cosmetic into a sync problem — both now build on the M5 native sim.
 
-**Why not sooner:** the port itself is cheap (~3–5 days of mechanical translation — the algorithms are designed, debugged, and hash-verified — plus 2–4 days of godot-cpp/SCons/CI toolchain) but porting before M5 taxes the wrong thing: M3–M5 is the sim's highest-churn stretch, and a C++ sim trades away GDScript's edit-and-rerun iteration exactly when game-feel iteration matters most. The hot core (movement/collision/combat/pathing) is already feature-complete as of M2; M3–M5 add breadth, not inner loops, so deferral barely grows the port. **Tripwire:** if M4 bot matches drop ticks on *desktop* at the army sizes we actually field, pull the port forward to post-M4 — playtest quality is the one thing we don't compromise.
+**Why M5 (not sooner, not later):** the port is cheap (~3–5 days of mechanical translation — the algorithms are designed, debugged, and hash-verified — plus 2–4 days of godot-cpp/SCons/CI toolchain), but doing it *before* M5 would have taxed the wrong thing: M3–M4 was the sim's highest-churn stretch, and a C++ sim trades away GDScript's edit-and-rerun iteration exactly when game-feel iteration matters most. That churn is now **spent** — the hot core and the M3/M4 breadth are feature-complete and tested — so M5 adds the trigger VM (a *new* subsystem, authored in C++ from the start), not re-tuning of the existing loops. The thing the deferral protected no longer applies, and the write-the-VM-once argument makes M5 the right moment. The GDScript sim **freezes at its M4 feature set** as the bit-exact parity oracle and readable reference; C++ becomes the sole forward implementation (see [docs/design_m5.md](docs/design_m5.md) §2).
 
 **The boundary sits where the data is: the whole `src/sim/` module, not individual hot functions.** The melee cost is spread across per-unit-per-neighbor inner loops; if entity state stayed in GDScript and we called C++ per unit, marshalling would eat the win. So entity state (structure-of-arrays) lives C++-side, and GDScript crosses the boundary O(1) times per tick: `Sim.new(seed, map)`, `schedule(command)`, `step()`, `state_hash()`, plus batch read APIs for the view (one packed array of positions per tick, not 300 property reads). The public surface is intentionally already shaped like this.
 
@@ -82,7 +82,7 @@ What stays GDScript permanently: everything outside the determinism wall — vie
 
 **Verification is free, and M2 already paid for it:** the sim is seed + commands → hash stream, so the port harness is "run the GDScript sim and the C++ sim on identical inputs, assert identical `state_hash()` every tick." The determinism suite becomes a bit-exact parity suite, and the GDScript sim stays in-repo as the readable reference implementation. Porting semantics to watch: GDScript ints are 64-bit with truncating division (use `int64_t`, match `/` and `>>` exactly); `DRng` already masks to 32 bits so it ports cleanly. State hashing already uses no engine internals — `SimHash` (FNV-1a, 32-bit lanes, no overflow dependence) replaced Godot's built-in `hash()` during M2, so hash streams are comparable across Godot versions and across the GDScript/C++ implementations.
 
-Open: where the trigger interpreter (M5) runs. Triggers execute inside the sim for lockstep safety, but they fire rarely compared to per-unit ticks — a GDScript interpreter calling the sim's command API across the boundary may be fine, unless custom maps run per-tick-per-unit triggers. Decide when the trigger language's real usage patterns exist (see Open Questions).
+**Resolved (M5): the trigger interpreter runs inside the wall, in C++.** The old question (a GDScript interpreter calling the sim's command API across the boundary vs. moving inside) is closed by pulling the port into M5: the VM is C++ sim code, the same side of the boundary as the state it drives — zero crossings per trigger op, determinism inherited from the constitution. Whether it stays an AST-walker or grows a bytecode fast path is now a contained optimization, not an architecture question (design_m5.md §3.2).
 
 
 ## Controls
@@ -280,6 +280,8 @@ Because the game promises "give intent, army executes," unit AI is a first-class
 
 The editor is the second product we're shipping, and the harder one. Architecture decisions here leak into the whole game, so the rule is: **the game's own content is data, and the editor edits that data.** If official maps need code the editor can't produce, we've failed the pillar.
 
+**v1 ships without the graphical editor (decided in M5).** Because the game's content is *data* (JSON terrain/objects/catalog overrides + a Lua-flavored trigger script), v1 authors that data directly — by hand and with AI assistance — and the visual world editor becomes its own post-v1 milestone (M8). This keeps the data formats and the trigger language as the real deliverables; the GUI, when it comes, is a registry-driven front-end over formats that already exist (design_m5.md §intro, §4.3).
+
 ### What a map is
 
 A map is a self-contained bundle (folder, zipped for distribution) containing:
@@ -296,11 +298,10 @@ The sim consumes catalogs + triggers; nothing in a map bundle is engine-executab
 
 ### Triggers and scripting
 
-WC3's GUI trigger editor (events, conditions, actions) is the model:
+WC3's GUI trigger editor (events, conditions, actions) is the model — but **v1 ships the language, not the GUI** (the graphical editor is deferred post-v1, see Roadmap; design_m5.md §intro):
 
-- Triggers are stored as data (a tree of typed nodes), edited in a touch/desktop-friendly GUI.
-- They execute on a small interpreter that lives *inside the sim* (so triggers are deterministic and lockstep-safe) and can only call the sim's command API — spawn unit, modify catalog value, move region, display text, etc. No filesystem, no network, no engine access.
-- A text form of the same language for power users ("custom script" blocks), which compiles to the same node tree. This is our JASS analog, and it stays small.
+- Triggers are stored as data (a tree of typed nodes) and execute on an interpreter that lives *inside the sim*, **written in C++** as of the M5 port (so triggers are deterministic and lockstep-safe). They can only call the sim's command API — spawn unit, modify catalog value, move region, issue orders, display text, etc. No filesystem, no network, no engine access; there is no general-purpose runtime to escape, only the specific actions we built.
+- The authoring surface is a **Lua-flavored text language** — familiar syntax, but float-free (Fixed only), statically typed, and registry-bound — compiled (outside the sim wall) to the same node tree the VM walks. This is our JASS analog, and it is **fully expressive** (locals, user functions, loops, per-instance data) so a community can build a tower defense or a scripted-AI scenario in it. The matching graphical editor is a later milestone the registry-driven design keeps cheap.
 - Letting users build levels in actual Godot remains an idea for a trusted/advanced tier, but it's explicitly out of scope until we have an answer to "how do we run someone else's GDScript safely" (we may never).
 
 ### Editor product notes
@@ -355,11 +356,12 @@ Build order chosen so the riskiest theses (controls, deterministic sim) get prov
 - **M0 — Scaffold.** Godot project, repo conventions, sim/view split skeleton, camera rig, CI sanity. *(done)*
 - **M1 — Control prototype.** Selection (tap + lasso), context orders, hold-and-swipe radial buttons, reselect, camera gestures — against dumb stationary units on a flat plane. Goal: the controls demo feels good in the hand. **This milestone is the go/no-go for the whole concept.** Every M1 button/tab is instantiated from UI catalog definitions (see "UI as Data") — hardcoded bindings now are what make the editor impossible later. *(done)*
 - **M2 — Sim core.** Fixed-point math, deterministic RNG (incl. pseudo-random procs), entities, grid, flow-field movement, combat resolution, command queue, state hashing, headless determinism tests (same seed + commands twice → identical hashes). *(done — pending on-device playtest; perf measured against the budget, see Technical Foundations)*
-- **M3 — One faction playable.** Hive vs target dummies: strongholds, capsules, nanomachine economy, 4–5 units, the Build and Economy console tabs.
-- **M4 — Two factions + bots.** Rebel roster, supply, a competent scripted bot, win/loss. First full game loop.
-- **M5 — Editor MVP.** Terrain editing, object placement, catalog overrides, trigger GUI v1. Rebuild our own test map in it (pillar #3 check).
-- **M6 — Multiplayer.** Lockstep over the network, reconnect, replays. Android export hardening.
-- **M7 — Polish & content.** 3–4 real maps (made in the editor), tactics/strategy tabs full version, art pass, sound pass.
+- **M3 — One faction playable.** Hive vs target dummies: strongholds, capsules, nanomachine economy, 4–5 units, the Build and Economy console tabs. *(done)*
+- **M4 — Two factions + bots.** Rebel roster, supply, a competent scripted bot, win/loss. First full game loop. *(done — sim tested headless; view/UI polish trailing)*
+- **M5 — Native sim & scripting foundation.** Port the sim to a C++ GDExtension (bit-exact against the frozen GDScript reference); build the trigger runtime (an expressive, lockstep-safe VM in C++) and its Lua-flavored scripting language + compiler; the map-bundle format (JSON + script). Maps are authored as data — **no graphical editor**. Rebuild our test map and a Lua-scripted tower defense as bundles (pillar #3 at the data level). See [docs/design_m5.md](docs/design_m5.md).
+- **M6 — Multiplayer.** Lockstep over the network, reconnect, replays — built on the M5 native sim. Android/iOS export hardening.
+- **M7 — Polish & content.** 3–4 real maps (authored in text/script), tactics/strategy tabs full version, art pass, sound pass. First shippable v1.
+- **M8 — World editor.** The graphical authoring tools (terrain/object/catalog/trigger GUIs) — a registry-driven front-end over the M5 data formats. Post-v1; brings community map-making to the touch/desktop UX pillar #2 demands.
 
 Each milestone ends with something playable on a phone, even if ugly.
 
@@ -389,9 +391,9 @@ Tracked here so they don't silently become decisions:
 3. **Designation count/UX** — does 8 chips survive contact with a real game?
 4. **Resource names** — "Alloy"/"Flux" are working names.
 5. **Mixed-selection ability button** — majority type vs subgroup cycling needs prototyping.
-6. **Trigger script surface** — how big does the custom-script language need to be before the editor can build a tower defense? (Good litmus test for editor completeness.)
+6. **Trigger script surface** — the VM / standard-library catalog is the live answer to "how big must the language be to build a tower defense" (the litmus test). First pass enumerated in [docs/trigger_vm_catalog.md](docs/trigger_vm_catalog.md); the M5 slice is staged against three target maps (tower defense, scripted-AI melee, cinematic intro).
 7. **Trusted Godot-native maps** — viable tier or permanently out of scope?
 8. **Monetization/distribution** — undecided, but money can never be used to buy an in-game advantage.
 9. **Cloud save backend** — map cloud saves + versioning are the project's first server-side dependency (before multiplayer relays even). Build vs. buy, auth model, and offline-first sync strategy all undecided; the editor must still work fully offline with sync as a layer on top.
 10. **Wall drawing UX** — drawn barricades (see "Structure footprints and drawn walls"): how the stroke is priced (per cell?), minimum/maximum length, how it coexists with the lasso gesture (it's modal — armed by the build-wall verb — but needs playtesting), and whether other structure types ever justify sub-tile footprints.
-11. **Trigger interpreter placement** — once the sim core is C++ (see "The GDExtension port"), does the M5 trigger interpreter stay GDScript calling the sim's command API across the boundary, or move inside? Depends on whether real custom maps run triggers per-tick-per-unit or only on events. Decide from usage, not up front.
+11. **Trigger interpreter placement** — *resolved (M5):* inside the wall, in C++, alongside the sim it drives (the port moved into M5 so the VM is written once in C++). Zero boundary crossings per trigger op; AST-walker now, bytecode fast path only if per-tick triggers ever profile hot. See "The GDExtension port" and design_m5.md §3.2.
