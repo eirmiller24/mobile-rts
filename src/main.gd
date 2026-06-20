@@ -61,13 +61,32 @@ var _cur := {}
 
 
 func _ready() -> void:
-	map = MapLoader.load_path(MAP_PATH)
+	_show_map_select()
+
+
+## Pre-match map picker (design_m5.md §4.1): choose a single-file skirmish map or
+## a scenario bundle before anything is loaded. The sim stays null until a pick.
+func _show_map_select() -> void:
+	var ms := MapSelect.new()
+	add_child(ms)
+	ms.setup()
+	ms.map_chosen.connect(_on_map_chosen)
+
+
+func _on_map_chosen(path: String) -> void:
+	map = MapLoader.load_path(path)
 	if not map.ok():
 		for e in map.errors:
 			push_error("map: %s" % e)
 		return
 	world_offset = map.tiles_w / 2.0
-	_show_faction_select()
+	# Skirmish maps declare faction-agnostic start anchors and let the player pick
+	# sides; scenario maps (e.g. a TD bundle) place their objects directly and go
+	# straight in with their declared factions.
+	if map.starts.is_empty():
+		_start_match({})
+	else:
+		_show_faction_select()
 
 
 ## Pre-match faction picker (design_m4.md §13). The sim is not built until the
@@ -90,11 +109,14 @@ func _show_faction_select() -> void:
 ## the body that used to run straight from `_ready`, now deferred behind the
 ## faction picker.
 func _start_match(factions: Dictionary) -> void:
-	MatchSetup.apply(map, factions)
-	if not map.ok():
-		for e in map.errors:
-			push_error("match setup: %s" % e)
-		return
+	# Scenario maps (no start anchors) keep their authored objects as-is; only
+	# skirmish maps spawn faction loadouts at their anchors.
+	if not map.starts.is_empty():
+		MatchSetup.apply(map, factions)
+		if not map.ok():
+			for e in map.errors:
+				push_error("match setup: %s" % e)
+			return
 	# The authoritative sim is the native C++ GDExtension (design_m5.md §2); the
 	# GameSim adapter advances it and mirrors a read view for the GDScript layer.
 	sim = GameSim.new()
@@ -200,9 +222,24 @@ func _process(delta: float) -> void:
 			bot.tick()
 		sim.step()
 		_capture_tick()
+		_drain_trigger_presentation()
 		_accumulator -= TICK_DT
 	_interpolate_views(_accumulator / TICK_DT)
 	_check_match_over()
+
+
+## Surface a map's trigger presentation (design_m5.md §3.4): messages addressed
+## to the local player (or to all) become HUD status. The queue is unhashed view
+## output, drained once per tick.
+func _drain_trigger_presentation() -> void:
+	if hud == null:
+		return
+	for ev: Dictionary in sim.trigger_presentation():
+		if int(ev.get("kind", -1)) != 0:
+			continue # 0 = message; pings (1) are not surfaced yet
+		var who := int(ev.get("who", 0))
+		if who == LOCAL_PLAYER or who == 0:
+			hud.set_status(str(ev.get("text", "")))
 
 
 # --- match: bots and the result screen (design_m4.md §7.3, §8) ----------------
@@ -220,6 +257,11 @@ func _setup_bots() -> void:
 			mains[e.player] = [e.x, e.y]
 	for pid in sim.players:
 		if pid == 0 or pid == LOCAL_PLAYER:
+			continue
+		# Only players with a town hall get a bot brain; a scenario's
+		# trigger-driven slot (e.g. TD creeps) has no main and is left to its
+		# triggers (design_m5.md §3.5).
+		if not mains.has(pid):
 			continue
 		var bot := BotCommander.new(sim, pid, SIM_SEED ^ (pid * 0x9E3779B1))
 		for mp in mains:

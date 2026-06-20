@@ -47,6 +47,11 @@ public:
 	// payload Dictionary; at_tick < 0 means tick + COMMAND_DELAY.
 	void schedule(int64_t player_id, int64_t kind, const PackedInt32Array &targets,
 			const Dictionary &params, int64_t seq, int64_t at_tick);
+	// Load the compiled trigger program (a GDScript TriggerProgram) after
+	// construct(), before stepping (design_m5.md §3, §4.2).
+	void load_triggers(Object *program);
+	// Drain the trigger VM's per-tick presentation queue for the view (§3.4).
+	Array trigger_presentation();
 
 	// --- batch view read API ---
 	Dictionary view_snapshot(int64_t viewer) const;

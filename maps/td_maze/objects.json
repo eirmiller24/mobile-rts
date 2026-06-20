@@ -1,0 +1,25 @@
+{
+	"objects": [
+		{ "type": "td.hub", "player": 1, "cx": 90, "cy": 44, "completed": true },
+
+		{ "type": "td.barrier", "player": 0, "cx": 38, "cy": 0, "completed": true },
+		{ "type": "td.barrier", "player": 0, "cx": 60, "cy": 26, "completed": true },
+
+		{ "type": "td.arrow_tower", "player": 1, "cx": 24, "cy": 44, "completed": true },
+		{ "type": "td.arrow_tower", "player": 1, "cx": 24, "cy": 52, "completed": true },
+
+		{ "type": "td.arrow_tower", "player": 1, "cx": 44, "cy": 74, "completed": true },
+		{ "type": "td.arrow_tower", "player": 1, "cx": 52, "cy": 74, "completed": true },
+		{ "type": "td.cannon_tower", "player": 1, "cx": 48, "cy": 82, "completed": true },
+
+		{ "type": "td.arrow_tower", "player": 1, "cx": 66, "cy": 16, "completed": true },
+		{ "type": "td.arrow_tower", "player": 1, "cx": 74, "cy": 16, "completed": true },
+		{ "type": "td.cannon_tower", "player": 1, "cx": 70, "cy": 10, "completed": true },
+
+		{ "type": "td.arrow_tower", "player": 1, "cx": 82, "cy": 50, "completed": true }
+	],
+	"regions": [
+		{ "name": "spawn", "cx": 2, "cy": 40, "w": 10, "h": 16 },
+		{ "name": "exit", "cx": 82, "cy": 40, "w": 12, "h": 16 }
+	]
+}

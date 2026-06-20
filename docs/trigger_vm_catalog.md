@@ -34,6 +34,66 @@ A **filter** is either a built-in filter constant (§10) or a user predicate
 
 Minor note for later: initialdamage_unit should go through armor. If we run into enough scenarios where we need a pure hp removal that ignores armor, we can always add that back in slice (a target map needs it) 
 
+## Implementation status (M5 build)
+
+What the GDScript compiler ([src/data/trigger_compiler.gd](../src/data/trigger_compiler.gd))
+and C++ VM ([native/src/sim/trigger_vm.cpp](../native/src/sim/trigger_vm.cpp),
+[trigger_builtins.cpp](../native/src/sim/trigger_builtins.cpp)) actually ship today.
+`✅` done · `⚠️` partial (works but a piece is stubbed) · unlisted = not yet built.
+Registry ids are the wire contract in [trigger_registry.gd](../src/data/trigger_registry.gd) ↔
+[trigger_ir.h](../native/src/sim/trigger_ir.h).
+
+- **Language core (§2):** ✅ everything — globals, locals, assignment, arithmetic
+  (int/fixed with int→fixed promotion), comparison, boolean (short-circuit),
+  literals (int/`fixed`/`30s` durations/bool/null/string), `if/elseif/else`,
+  `while`, numeric `for`, `for_each_unit_in` (`for u in g`), `break`/`return`,
+  user functions (params/returns/recursion), event handlers, `wait`, per-instance
+  data / MUI (via `wait`+locals), comments. Not yet: `trigger`-typed values.
+- **Events (§3):** ✅ `match_start`, `map_init`, `every`, `timer_expires`,
+  `unit_enters_region`, `unit_leaves_region`, `unit_dies`, `structure_completes`.
+  Not yet: `unit_created` (firing), `unit_takes_damage`, `player_resource_crosses`,
+  `ability_cast`, `unit_attacked`, `unit_enters_range`, `player_eliminated`.
+- **Event-context (§4):** ✅ `triggering_unit`, `triggering_player`,
+  `triggering_region`, `entering_unit`, `leaving_unit`, `dying_unit`,
+  `completed_structure`, `expired_timer`. ⚠️ `killing_unit` (returns context but
+  killer attribution is always null for now), `created_unit` (query exists; the
+  `unit_created` event isn't fired yet).
+- **Entity queries (§5.1):** ✅ `unit_type`, `owner`, `is_alive`, `unit_hp`,
+  `unit_max_hp`, `unit_position`, `is_structure`, `is_unit`, `build_state`,
+  `unit_stance`.
+- **Geometry (§5.2):** ✅ `point`, `point_x`, `point_y`, `offset`, `distance`,
+  `region_center`, `region_random_point`, `point_in_region`, `unit_in_region`.
+- **Groups (§5.3):** ✅ `units_in_region`, `units_of_player`, `units_in_range`,
+  `units_of_type`, `group_size`, `group_contains`, `random_unit_in`,
+  `nearest_unit`, `first_unit_in`, `group_add`, `group_remove`, `group_clear`.
+- **Players & economy (§5.4):** ✅ `player_resource`, `player_unit_count`,
+  `is_enemy`, `is_ally`, `player_relation`.
+- **Vision (§5.5):** ✅ `is_visible_to`.
+- **Unit actions (§6.1):** ✅ `create_unit`, `create_units`, `remove_unit`,
+  `kill_unit`, `heal_unit`, `set_unit_hp`, `set_unit_position`, `set_owner`,
+  `set_unit_stance`. ⚠️ `damage_unit` (flat — does not route through the armor
+  matrix yet).
+- **Economy actions (§6.2):** ✅ `set_resource`, `add_resource`.
+- **Orders (§6.3):** ✅ `order_move`, `order_attack` (attack-move to the target's
+  position), `order_attack_move`, `order_patrol`, `order_stop`, `order_train`,
+  `set_rally`, plus group forms `order_group_move`/`order_group_attack_move`.
+- **Regions (§6.4):** ✅ `move_region`.
+- **Groups/timers (§6.6):** ✅ `start_timer`, `pause_timer`, `resume_timer`,
+  `destroy_timer`, `timer_remaining`.
+- **Trigger control (§6.7):** ⚠️ `enable_trigger`/`disable_trigger`/
+  `is_trigger_enabled` are registered but inert (no `trigger` value type to name a
+  trigger yet).
+- **Match control (§6.8):** ✅ `declare_victory`, `declare_defeat`, `end_match`,
+  `set_player_eliminated`.
+- **Presentation (§7):** ✅ `display_message`, `ping_minimap` (drained to the
+  view's unhashed queue).
+- **Math (§9):** ✅ `min`, `max`, `abs`, `clamp`, `random_int`, `random_fixed`,
+  `to_fixed`, `floor`, `round`.
+- **Filters (§10):** ✅ constants `ANY`/`ALIVE`/`IS_STRUCTURE`/`IS_UNIT` and
+  constructors `ENEMY_OF`/`ALLY_OF`/`OWNED_BY`/`OF_TYPE`. Not yet: user-predicate
+  filters.
+
+
 ## 1. The type system
 
 | Type | Notes |

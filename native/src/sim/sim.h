@@ -32,7 +32,9 @@
 #include "sim/id_vec.h"
 #include "sim/pathing.h"
 #include "sim/player.h"
+#include "sim/region.h"
 #include "sim/sim_grid.h"
+#include "sim/trigger_vm.h"
 
 namespace mrts {
 
@@ -69,11 +71,25 @@ public:
 	CatalogView catalog;
 	IdVec<Player> players;
 	IdVec<Entity> entities;
+	// Named map areas (design_m5.md §3.6), ascending id. Mutable by triggers
+	// (move_region) so hashed; loaded from the map at construction.
+	std::vector<Region> regions;
+	Region *region_by_id(int64_t id);
+	const Region *region_by_id(int64_t id) const;
 
 	void construct(int64_t seed, godot::Object *catalog_obj, godot::Object *map_obj);
 	int64_t state_hash() const;
 	void step();
 	void schedule(const Command &cmd, int64_t at_tick = -1);
+	// Apply a command immediately (the trigger VM's order bridge, design_m5.md
+	// §3.5 — a trigger-issued SimCommand runs the same validation as a player's).
+	void apply_command(const Command &cmd) { _execute(cmd); }
+
+	// --- triggers (design_m5.md §3) ---
+	// The VM lives inside the wall as a sim subsystem; its state is hashed.
+	TriggerVM triggers;
+	// Compile-time-produced program, loaded after construct(), before stepping.
+	void load_triggers(godot::Object *program);
 
 	// scenario setup / spawning
 	int64_t spawn_unit(int64_t player, int64_t x, int64_t y, int64_t type_key);

@@ -39,6 +39,9 @@ func setup(seed_value: int, p_catalog: CompiledCatalog, map: MapData, p_local :=
 	catalog = p_catalog
 	local_player = p_local
 	_n.construct(seed_value, p_catalog, map)
+	# Load the map's compiled trigger program, if any (design_m5.md §3, §4.2).
+	if map.trigger_program != null:
+		_n.load_triggers(map.trigger_program)
 	grid = SimGrid.new(_n.grid_tiles_w(), _n.grid_tiles_h())
 	_refresh()
 
@@ -51,6 +54,12 @@ func step() -> void:
 ## Authoritative state hash (native). Used by desync detection / parity checks.
 func state_hash() -> int:
 	return _n.state_hash()
+
+
+## Drain the trigger VM's per-tick presentation queue (design_m5.md §3.4): an
+## Array of {kind, who, text|x,y} records the view shows. Unhashed.
+func trigger_presentation() -> Array:
+	return _n.trigger_presentation() if _n != null else []
 
 
 ## Schedule a SimCommand (the GDScript wire form) onto the native queue.

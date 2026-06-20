@@ -142,10 +142,24 @@ bool Sim::_in_range(const Entity &e, const Entity &t, int64_t r, bool edge_to_ed
 }
 
 void Sim::_reap() {
+	// Collect the dead (ascending id) before touching the container.
+	std::vector<int64_t> dead;
 	for (int64_t id : _sorted_ids()) {
 		Entity *e = E(id);
-		if (e->hp > 0) {
-			continue;
+		if (e->hp <= 0) {
+			dead.push_back(id);
+		}
+	}
+	// Fire unit_dies while the entities still exist, so dying_unit()/owner()/
+	// unit_position() resolve (design_m5.md §5). Handlers may spawn or kill (those
+	// reap next tick); they iterate their own snapshot, not `entities`.
+	if (!dead.empty()) {
+		triggers.fire_deaths(dead);
+	}
+	for (int64_t id : dead) {
+		Entity *e = E(id);
+		if (e == nullptr || e->hp > 0) {
+			continue; // a death handler may have removed or revived it
 		}
 		if (e->blocks) {
 			grid.unblock_rect(e->foot_x, e->foot_y, e->foot_w, e->foot_h);

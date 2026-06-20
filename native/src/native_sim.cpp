@@ -18,6 +18,8 @@ void NativeSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("step"), &NativeSim::step);
 	ClassDB::bind_method(D_METHOD("schedule", "player_id", "kind", "targets", "params", "seq", "at_tick"),
 			&NativeSim::schedule);
+	ClassDB::bind_method(D_METHOD("load_triggers", "program"), &NativeSim::load_triggers);
+	ClassDB::bind_method(D_METHOD("trigger_presentation"), &NativeSim::trigger_presentation);
 
 	ClassDB::bind_method(D_METHOD("view_snapshot", "viewer"), &NativeSim::view_snapshot);
 	ClassDB::bind_method(D_METHOD("vision_of", "player"), &NativeSim::vision_of);
@@ -92,6 +94,9 @@ void NativeSim::schedule(int64_t player_id, int64_t kind, const PackedInt32Array
 	c.seq = seq;
 	_sim.schedule(c, at_tick);
 }
+
+void NativeSim::load_triggers(Object *program) { _sim.load_triggers(program); }
+Array NativeSim::trigger_presentation() { return _sim.triggers.drain_presentation(); }
 
 Dictionary NativeSim::view_snapshot(int64_t viewer) const { return _sim.view_snapshot(viewer); }
 PackedByteArray NativeSim::vision_of(int64_t player) const { return _sim.vision_bytes(player); }

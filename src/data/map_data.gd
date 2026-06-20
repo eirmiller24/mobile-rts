@@ -32,6 +32,19 @@ var objects: Array[Dictionary] = []
 ## hash — the spawned objects it produces are (via rehash after setup).
 var starts: Array[Dictionary] = []
 
+## Named regions (design_m5.md §3.6): {id, min_x, min_y, max_x, max_y} in
+## fixed-point world coords. Referenced by trigger events/queries and mutable by
+## triggers (move_region), so they fold into the hash when present.
+var regions: Array[Dictionary] = []
+
+## Region name -> id, for the trigger compiler (resolved from the bundle).
+var region_names: Dictionary = {}
+
+## Compiled trigger program (design_m5.md §3.9), or null for a trigger-less map.
+## Loaded into the sim via NativeSim.load_triggers after construct; its hash
+## folds into the map content hash so a tampered script desyncs at tick 0.
+var trigger_program: TriggerProgram = null
+
 ## SimHash over tiles, players, and objects.
 var hash_value := 0
 
@@ -60,4 +73,12 @@ func rehash() -> void:
 		return a["id"] < b["id"])
 	SimHash.fold_value(buf, by_id)
 	SimHash.fold_value(buf, objects)
+	# Only fold regions when present, so trigger-less M4 maps keep their exact
+	# hash (and stay bit-exact with the GDScript oracle, design_m5.md §2.4).
+	if not regions.is_empty():
+		SimHash.fold_value(buf, regions)
+	# The compiled trigger program (design_m5.md §4.1): folding its hash makes a
+	# tampered/edited script change the map's identity. Null for trigger-less maps.
+	if trigger_program != null:
+		SimHash.fold_value(buf, trigger_program.hash_value)
 	hash_value = SimHash.fnv_bytes(buf)

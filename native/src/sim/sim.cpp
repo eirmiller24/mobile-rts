@@ -59,6 +59,23 @@ void Sim::construct(int64_t seed, Object *catalog_obj, Object *map_obj) {
 		}
 	}
 
+	// Named regions (design_m5.md §3.6), if the map declares any. Plain rects in
+	// fixed-point world coords; ascending id.
+	if (map_obj->has_method("get") && map_obj->get("regions").get_type() == Variant::ARRAY) {
+		Array map_regions = map_obj->get("regions");
+		regions.reserve(map_regions.size());
+		for (int i = 0; i < map_regions.size(); i++) {
+			Dictionary r = map_regions[i];
+			Region reg;
+			reg.id = (int64_t)r["id"];
+			reg.min_x = (int64_t)r["min_x"];
+			reg.min_y = (int64_t)r["min_y"];
+			reg.max_x = (int64_t)r["max_x"];
+			reg.max_y = (int64_t)r["max_y"];
+			regions.push_back(reg);
+		}
+	}
+
 	// Seed worker home depots, then each depot's economy target (design_m4 §3.2).
 	for (Entity &e : entities) {
 		if (_is_worker(e) && e.hp > 0) {
@@ -199,6 +216,10 @@ void Sim::_on_structure_complete(Entity &e) {
 				e.nano_alloc[0] = 0; e.nano_alloc[1] = 0; e.nano_alloc[2] = 0; break;
 		}
 	}
+	// Fire structure_completes — deferred to the next trigger phase, because this
+	// runs inside _structures_system's entity iteration and a handler must not
+	// mutate the container now. The VM ignores completions before match_start.
+	triggers.note_structure_complete(e.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -473,7 +494,36 @@ int64_t Sim::state_hash() const {
 	for (const Entity &e : entities) {
 		h = e.hash_into(h);
 	}
+	// Regions only fold when present, so trigger-less M4 maps stay bit-exact
+	// with the GDScript oracle (design_m5.md §2.4); region maps carry triggers
+	// and are verified native-vs-native by determinism.
+	for (const Region &r : regions) {
+		h = r.hash_into(h);
+	}
+	h = triggers.hash_into(h);
 	return h;
+}
+
+void Sim::load_triggers(Object *program) {
+	triggers.load(this, program);
+}
+
+Region *Sim::region_by_id(int64_t id) {
+	for (Region &r : regions) {
+		if (r.id == id) {
+			return &r;
+		}
+	}
+	return nullptr;
+}
+
+const Region *Sim::region_by_id(int64_t id) const {
+	for (const Region &r : regions) {
+		if (r.id == id) {
+			return &r;
+		}
+	}
+	return nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +566,10 @@ void Sim::_execute_scheduled_commands() {
 void Sim::step() {
 	_rebuild_aura_index();
 	_execute_scheduled_commands();
+	// Trigger phase (design_m5.md §3.7): match_start on the first tick, then
+	// resume due waits, advance timers, fire every() — before the sim systems so
+	// trigger spawns/orders take effect this tick.
+	triggers.tick_phase();
 	_economy_system();
 	_worker_economy_system();
 	_worker_build_system();

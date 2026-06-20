@@ -1,0 +1,84 @@
+{
+	"td.classes": {
+		"kind": "classes",
+		"sim": {
+			"attack_classes": ["arrow", "cannon"],
+			"armor_classes": ["creep", "structure"],
+			"matrix": {
+				"arrow":  { "creep": "1.0", "structure": "0.5" },
+				"cannon": { "creep": "1.5", "structure": "1.0" }
+			},
+			"capsule_time": "1.0",
+			"capsule_hp": 40,
+			"alloy_rate": "0.1",
+			"flux_rate": "0.05",
+			"assist_rate": "0.5",
+			"repair_rate": "1.0"
+		}
+	},
+	"td.territory": {
+		"kind": "ability",
+		"sim": {
+			"ability_kind": "aura", "radius": "48.0", "affects": "own_structures",
+			"flags": ["territory"], "modifiers": { "hp_regen": "1.0", "damage_taken": "1.0" }
+		},
+		"ui": { "label": "Command Range" }
+	},
+	"td.build": {
+		"kind": "ability",
+		"sim": {
+			"ability_kind": "build", "mechanic": "capsule",
+			"structures": ["td.arrow_tower", "td.cannon_tower"]
+		},
+		"ui": { "label": "Build Tower", "description": "Raise a tower to maze the lane." }
+	},
+	"td.hub": {
+		"kind": "structure",
+		"sim": {
+			"hp": 3000, "foot_w": 4, "foot_h": 4, "armor_class": "structure", "is_main": true,
+			"build_time": "1.0", "sight": "24.0", "bandwidth_provided": 200,
+			"abilities": ["td.territory", "td.build"]
+		},
+		"view": { "shape": "box", "color": "2962ff", "height": 2.4 },
+		"ui": { "label": "Command Post", "description": "Your base. Don't let the creeps reach it." }
+	},
+	"td.arrow_tower": {
+		"kind": "structure",
+		"sim": {
+			"hp": 200, "foot_w": 2, "foot_h": 2, "armor_class": "structure",
+			"damage": 14, "attack_class": "arrow", "attack_range": "6.0", "acquire_range": "7.0",
+			"cooldown": "0.4", "hits_air": true, "sight": "8.0",
+			"cost_alloy": 40, "build_time": "1.5"
+		},
+		"view": { "shape": "cylinder", "color": "00bfa5", "height": 1.6 },
+		"ui": { "label": "Arrow Tower", "description": "Cheap, fast, low damage." }
+	},
+	"td.cannon_tower": {
+		"kind": "structure",
+		"sim": {
+			"hp": 350, "foot_w": 2, "foot_h": 2, "armor_class": "structure",
+			"damage": 50, "attack_class": "cannon", "attack_range": "7.0", "acquire_range": "8.0",
+			"cooldown": "1.4", "hits_air": true, "sight": "9.0",
+			"cost_alloy": 110, "build_time": "2.5"
+		},
+		"view": { "shape": "box", "color": "ff6d00", "height": 1.8 },
+		"ui": { "label": "Cannon Tower", "description": "Slow, expensive, big hits." }
+	},
+	"td.barrier": {
+		"kind": "structure",
+		"sim": {
+			"hp": 100000, "foot_w": 2, "foot_h": 70, "armor_class": "structure", "build_time": "0.1"
+		},
+		"view": { "shape": "box", "color": "455a64", "height": 1.0 },
+		"ui": { "label": "Barrier", "description": "Channels the creep lane." }
+	},
+	"td.creep": {
+		"kind": "unit",
+		"sim": {
+			"hp": 5000, "damage": 0, "armor_class": "creep", "radius": "0.4", "speed": "3.5",
+			"attack_range": "0", "acquire_range": "0", "sight": "5.0"
+		},
+		"view": { "shape": "box", "color": "e53935", "height": 1.0 },
+		"ui": { "label": "Creep", "description": "Marches to your base. Stop it." }
+	}
+}

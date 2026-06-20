@@ -1,0 +1,11 @@
+{
+	"name": "Maze TD",
+	"version": 1,
+	"mode": "scenario",
+	"catalog_layers": ["catalog/td.json"],
+	"terrain": { "tiles_w": 48, "tiles_h": 48 },
+	"players": [
+		{ "id": 1, "faction": "td", "start_alloy": 300, "start_flux": 0 },
+		{ "id": 2, "faction": "creeps", "start_alloy": 0, "start_flux": 0 }
+	]
+}
