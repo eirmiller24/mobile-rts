@@ -7,7 +7,7 @@ extends Node3D
 
 const REFRESH := 0.3
 
-var sim: Sim
+var sim: GameSim
 var local_player := 1
 var world_offset := 32.0
 var tint := Color(0.25, 0.75, 0.35, 0.13)

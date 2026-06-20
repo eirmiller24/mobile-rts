@@ -6,7 +6,7 @@ extends PopupViewport
 
 signal place_confirmed(type_key: int, cx: int, cy: int)
 
-var sim: Sim
+var sim: GameSim
 var local_player := 1
 var world_offset := 32.0
 ## Node the ghost mesh attaches to (the 3D scene root).

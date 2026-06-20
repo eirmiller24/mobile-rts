@@ -7,7 +7,7 @@ extends RefCounted
 ## explicit builders/structures BEFORE a command exists — the sim never
 ## sees "near Bravo" (design_m3.md §4.9).
 
-var sim: Sim
+var sim: GameSim
 var local_player := 1
 var designations: Designations
 var world_offset := 32.0

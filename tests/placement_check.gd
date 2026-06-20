@@ -23,8 +23,16 @@ func _expect(cond: bool, msg: String) -> void:
 
 
 func _initialize() -> void:
+	if not ClassDB.class_exists("NativeSim"):
+		print("placement_check: SKIP (NativeSim not built)")
+		quit(0)
+		return
+
 	var map := MapLoader.load_path("res://maps/dev_arena.json")
-	var sim := Sim.new(3, map.catalog, map)
+	# PlacementGhost reads the game through GameSim (the native-backed view
+	# facade); the 4th arg is the local viewer, mirroring main.gd's setup.
+	var sim := GameSim.new()
+	sim.setup(3, map.catalog, map, 1)
 	sim.step() # the aura index is rebuilt per tick; evaluate after one
 	var ghost := PlacementGhost.new()
 	ghost.sim = sim

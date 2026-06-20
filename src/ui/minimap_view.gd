@@ -20,7 +20,7 @@ signal pin_tapped(slot: int)
 const REFRESH_INTERVAL := 0.25
 const PIN_TAP_RADIUS := 18.0
 
-var sim: Sim
+var sim: GameSim
 var local_player := 1
 var designations: Designations
 var mode := Mode.JUMP

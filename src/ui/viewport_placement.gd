@@ -28,7 +28,7 @@ const BAR_H := 52.0
 ## units (fingers don't have half-tile accuracy).
 const SNAP_DIST := 1.6
 
-var sim: Sim
+var sim: GameSim
 var local_player := 1
 var world_offset := 32.0
 var ghost_parent: Node3D

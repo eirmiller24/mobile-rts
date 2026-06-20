@@ -12,7 +12,7 @@
 	"workspaceMount": "source=${localWorkspaceFolder},target=/home/eir/Documents/godot/mobile-rts,type=bind",
 	"mounts": ["source=${localEnv:HOME}/.ssh,target=/home/eir/.ssh,type=bind,readonly"],
 	"workspaceFolder": "/home/eir/Documents/godot/mobile-rts",
-  	"postStartCommand": "ssh-add /home/eir/.ssh/id_ed25519",
+  	"postStartCommand": "ssh-add /home/eir/.ssh/id_ed25519 && python3 -m pip install --break-system-packages scons",
 	"postCreateCommand": "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc",
 	
 	"remoteUser": "eir",

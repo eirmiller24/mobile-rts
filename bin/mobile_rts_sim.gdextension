@@ -1,0 +1,20 @@
+; Mobile RTS native sim (M5 GDExtension port, design_m5.md §2).
+; Built from native/ via SCons; libraries land here next to this manifest.
+;
+; compatibility_minimum is 4.5 because godot-cpp has no 4.6 branch yet — a
+; 4.5-binding build loads in our 4.6.3 engine via GDExtension's forward
+; compatibility (the SConstruct feeds it the 4.6.3 extension_api.json so the
+; available class/method set still matches the running engine).
+
+[configuration]
+entry_symbol = "mobile_rts_sim_library_init"
+compatibility_minimum = "4.5"
+reloadable = true
+
+[libraries]
+linux.debug.x86_64 = "res://bin/libmobile_rts_sim.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/libmobile_rts_sim.linux.template_release.x86_64.so"
+android.debug.arm64 = "res://bin/libmobile_rts_sim.android.template_debug.arm64.so"
+android.release.arm64 = "res://bin/libmobile_rts_sim.android.template_release.arm64.so"
+android.debug.arm32 = "res://bin/libmobile_rts_sim.android.template_debug.arm32.so"
+android.release.arm32 = "res://bin/libmobile_rts_sim.android.template_release.arm32.so"

@@ -17,5 +17,17 @@ data_*/
 mono_crash.*.json
 
 # Exports
-.apk
-.apk.idsig
+*.apk
+*.apk.idsig
+
+# Native sim (GDExtension) build artifacts — the .gdextension manifest in
+# bin/ is committed; the compiled libraries and SCons intermediates are not.
+bin/*.so
+bin/*.dll
+bin/*.dylib
+bin/*.wasm
+native/**/*.o
+native/**/*.os
+native/**/*.obj
+native/.sconsign.dblite
+native/**/.sconsign.dblite

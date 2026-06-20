@@ -6,6 +6,9 @@ on:
   pull_request:
 
 jobs:
+  # Pure-GDScript reference-sim gate. Runs without the native extension built
+  # (Godot logs a "library not found" error for the .gdextension and continues;
+  # the GDScript reference sim is fully runnable on its own — design_m5.md §2.5).
   determinism:
     runs-on: ubuntu-latest
     steps:
@@ -56,3 +59,67 @@ jobs:
 
       - name: UI catalog check
         run: ~/godot-bin/godot --headless --path . -s res://tests/ui_catalog_check.gd
+
+  # Native (C++ GDExtension) sim build + bit-exact parity gate (design_m5.md
+  # §2.5, §7). Builds the extension for desktop Linux and runs the substrate
+  # and tick-0 parity checks against the frozen GDScript oracle.
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install SCons
+        run: pipx install scons || pip install --user scons
+
+      - name: Cache godot-cpp build
+        uses: actions/cache@v4
+        with:
+          path: native/godot-cpp/bin
+          key: godot-cpp-${{ hashFiles('.gitmodules') }}-${{ hashFiles('native/godot-cpp/SConstruct') }}
+
+      - name: Build native sim (template_debug)
+        run: cd native && scons -j$(nproc) target=template_debug
+
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-4.6.3-stable-linux-x86_64
+
+      - name: Download Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot-bin
+          curl -fL -o /tmp/godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip
+          unzip /tmp/godot.zip -d /tmp
+          mv /tmp/Godot_v4.6.3-stable_linux.x86_64 ~/godot-bin/godot
+
+      - name: Import project
+        run: ~/godot-bin/godot --headless --path . --import || true
+
+      - name: Native substrate parity
+        run: ~/godot-bin/godot --headless --path . -s res://tests/native_substrate_check.gd
+
+      - name: Native tick-0 parity
+        run: ~/godot-bin/godot --headless --path . -s res://tests/native_tick0_parity_check.gd
+
+      - name: Native per-tick parity (full M4 suite)
+        run: ~/godot-bin/godot --headless --path . -s res://tests/port_parity_check.gd
+
+      - name: Native view-API parity
+        run: ~/godot-bin/godot --headless --path . -s res://tests/native_view_api_check.gd
+
+      - name: GameSim adapter parity
+        run: ~/godot-bin/godot --headless --path . -s res://tests/game_sim_check.gd
+
+      - name: Game-loop swap (native-backed == GDScript)
+        run: ~/godot-bin/godot --headless --path . -s res://tests/game_loop_smoke.gd
+
+  # TODO (design_m5.md §2.5, §7 native_build_check / exit criterion 2): an
+  # Android (arm64) build job once the NDK is provisioned in CI —
+  #   cd native && scons platform=android arch=arm64 target=template_release
+  # The SConstruct already supports the target; this is a CI-provisioning task.

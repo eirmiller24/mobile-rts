@@ -26,7 +26,7 @@ const VERB_KIND := {
 ## Player 0 is reserved for neutral/hostile-neutral map objects (§3).
 const LOCAL_PLAYER := 1
 
-var sim: Sim
+var sim: GameSim
 var map: MapData
 var catalog: UICatalog
 var hud: Hud
@@ -95,7 +95,10 @@ func _start_match(factions: Dictionary) -> void:
 		for e in map.errors:
 			push_error("match setup: %s" % e)
 		return
-	sim = Sim.new(SIM_SEED, map.catalog, map)
+	# The authoritative sim is the native C++ GDExtension (design_m5.md §2); the
+	# GameSim adapter advances it and mirrors a read view for the GDScript layer.
+	sim = GameSim.new()
+	sim.setup(SIM_SEED, map.catalog, map, LOCAL_PLAYER)
 	# Faction-aware UI: the local player's faction picks the UI layer (the
 	# "UI as data" dividend — the Rebels get Crew, the mine order, worker
 	# dials, the draw-wall verb; design_m4.md §13.2).
@@ -393,8 +396,10 @@ func _capture_tick() -> void:
 		# the sim says we can legitimately see them — aerial capsules over
 		# walls (radius-only) and ground units in unoccluded vision.
 		var view: UnitView = _views[id]
-		view.visible = e.player == LOCAL_PLAYER or e.is_resource() \
-				or sim.is_entity_visible(LOCAL_PLAYER, e)
+		# Knowledge-gated rendering: should_render bakes own || resource || seen
+		# for the local player into the per-tick snapshot (batch — no per-entity
+		# boundary crossing). See GameSim / design_m4.md §6.
+		view.visible = sim.should_render(e)
 		view.sync_state(e, capsule_time)
 
 

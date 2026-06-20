@@ -131,6 +131,16 @@ func blocked_bytes() -> PackedByteArray:
 	return _blocked
 
 
+## Overwrite the blocked counts wholesale and bump the version. Used by the
+## GameSim view adapter to mirror the native C++ grid each tick (the native sim
+## owns the authoritative grid; this GDScript SimGrid is a read mirror for the
+## view's geometry/occupancy queries). Not used inside the deterministic sim.
+func set_blocked_bytes(bytes: PackedByteArray) -> void:
+	assert(bytes.size() == width * height, "blocked byte size mismatch")
+	_blocked = bytes
+	version += 1
+
+
 func hash_into(h: int) -> int:
 	if _blocked_hash_version != version:
 		_blocked_hash = SimHash.fnv_bytes(_blocked)

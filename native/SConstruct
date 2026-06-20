@@ -1,0 +1,44 @@
+#!/usr/bin/env python
+#
+# SCons build for the Mobile RTS native sim (M5 GDExtension port, design_m5.md §2).
+#
+# The whole of src/sim/ is ported to C++ behind a single registered class,
+# NativeSim, which mirrors the GDScript Sim's public surface (new/schedule/
+# step/state_hash + batch read APIs). The substrate (Fixed/DRng/ProcRng/
+# SimHash/SimGrid and the entity/command/player structs) is plain C++ in the
+# `mrts` namespace and never crosses the boundary.
+#
+# Build:   cd native && scons            (debug, host platform)
+#          scons target=template_release
+#          scons platform=android arch=arm64   (mobile target, design_m5.md §2.5)
+#
+# The compiled library lands in ../bin/, next to mobile_rts_sim.gdextension,
+# where Godot discovers it.
+
+import os
+
+# godot-cpp lives as a submodule (4.5 branch — there is no 4.6 branch yet).
+# A 4.5-binding build loads in our 4.6.3 engine via GDExtension forward
+# compatibility; the sim uses no 4.6-only APIs, so the bundled 4.5 API is
+# sufficient and avoids custom-api-file juggling.
+env = SConscript("godot-cpp/SConstruct")
+
+# --- our sources ------------------------------------------------------------
+env.Append(CPPPATH=["src/"])
+sources = Glob("src/*.cpp")
+sources += Glob("src/sim/*.cpp")
+
+# --- output -----------------------------------------------------------------
+# libmobile_rts_sim.<platform>.<target>.<arch>.<ext>
+lib_basename = "libmobile_rts_sim{}{}".format(
+    env["suffix"], env["SHLIBSUFFIX"]
+)
+out_dir = "#../bin"
+
+# On Android/iOS godot-cpp adds the platform tag we want in the suffix already.
+library = env.SharedLibrary(
+    os.path.join(out_dir, lib_basename),
+    source=sources,
+)
+
+Default(library)

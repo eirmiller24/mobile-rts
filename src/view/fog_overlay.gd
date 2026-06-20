@@ -9,7 +9,7 @@ extends MeshInstance3D
 
 const REFRESH := 0.25
 
-var sim: Sim
+var sim: GameSim
 var local_player := 1
 var world_offset := 32.0
 

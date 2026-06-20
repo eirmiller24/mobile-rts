@@ -21,7 +21,9 @@ const ARMY_RETREAT_THRESHOLD := 2
 ## Build supply once used Crew/Bandwidth reaches this fraction of provided.
 const SUPPLY_HEADROOM := 2
 
-var sim: Sim
+# Untyped: the bot reads through the duck-typed Sim surface, so it drives either
+# the frozen GDScript Sim (tests) or the native-backed GameSim (game).
+var sim
 var player_id: int
 var rng := RandomNumberGenerator.new()
 var _seq := 0
@@ -35,7 +37,7 @@ var _seen_enemy: Dictionary = {}
 var scout_hints: Array = []
 
 
-func _init(p_sim: Sim, p_player_id: int, seed_value: int) -> void:
+func _init(p_sim, p_player_id: int, seed_value: int) -> void:
 	sim = p_sim
 	player_id = p_player_id
 	rng.seed = seed_value
@@ -64,7 +66,7 @@ func _issue(kind: SimCommand.Kind, targets: Array[int], params: Dictionary) -> v
 	c.params = params
 	c.seq = _seq
 	_seq += 1
-	var at := sim.tick + Sim.COMMAND_DELAY
+	var at: int = sim.tick + Sim.COMMAND_DELAY
 	sim.schedule(c, at)
 	issued.append({"at": at, "cmd": c})
 
@@ -84,7 +86,7 @@ func _own(filter: Callable) -> Array[SimEntity]:
 func _is_combat_unit(e: SimEntity) -> bool:
 	if not e.is_unit():
 		return false
-	var s := sim.catalog.sim_of(e.type_key)
+	var s: Dictionary = sim.catalog.sim_of(e.type_key)
 	return s["damage"] > 0 and s["carry_capacity"] == 0
 
 
@@ -139,13 +141,13 @@ func _is_depot_filter(e: SimEntity) -> bool:
 
 
 func _supply() -> void:
-	var bw := sim.bandwidth_of(player_id)
+	var bw: Dictionary = sim.bandwidth_of(player_id)
 	if bw["provided"] - bw["used"] > SUPPLY_HEADROOM:
 		return
 	# Find a buildable supply structure (provides bandwidth, no attack/nano).
 	var best := -1
 	for type: int in sim.buildable_structures(player_id):
-		var s := sim.catalog.sim_of(type)
+		var s: Dictionary = sim.catalog.sim_of(type)
 		if s["bandwidth_provided"] > 0 and s["nano_pool"] == 0 and not s["is_main"]:
 			if best == -1 or s["cost_alloy"] < sim.catalog.sim_of(best)["cost_alloy"]:
 				best = type
@@ -162,13 +164,13 @@ func _produce() -> void:
 	if army.size() >= ARMY_ATTACK_THRESHOLD + 4:
 		return  # enough in the field; spend elsewhere
 	# Train the cheapest affordable combat unit at the shortest-queue producer.
-	var res := sim.resources_of(player_id)
-	var bw := sim.bandwidth_of(player_id)
+	var res: Dictionary = sim.resources_of(player_id)
+	var bw: Dictionary = sim.bandwidth_of(player_id)
 	var pick := -1
 	for type: int in sim.trainable_units(player_id):
 		if _is_worker_type(type):
 			continue
-		var s := sim.catalog.sim_of(type)
+		var s: Dictionary = sim.catalog.sim_of(type)
 		if s["damage"] <= 0:
 			continue
 		if res["alloy"] < s["cost_alloy"] or res["flux"] < s["cost_flux"]:
@@ -179,7 +181,7 @@ func _produce() -> void:
 			pick = type
 	if pick == -1:
 		return
-	var producer := sim.train_structure_for(player_id, pick)
+	var producer: int = sim.train_structure_for(player_id, pick)
 	if producer != 0:
 		_issue(SimCommand.Kind.TRAIN, [producer], {"type": pick})
 
@@ -188,19 +190,19 @@ func _produce() -> void:
 
 
 func _build(type: int) -> void:
-	var builder := sim.builder_for(player_id, type)
+	var builder: int = sim.builder_for(player_id, type)
 	if builder == 0:
 		return
 	# Place near the builder on free, reachable ground.
 	var b: SimEntity = sim.entities[builder]
-	var s := sim.catalog.sim_of(type)
-	var cell := sim._free_cell_near_rect(b.foot_x if b.foot_w > 0 else sim.grid.cell_of(b.x),
+	var s: Dictionary = sim.catalog.sim_of(type)
+	var cell: int = sim._free_cell_near_rect(b.foot_x if b.foot_w > 0 else sim.grid.cell_of(b.x),
 			b.foot_y if b.foot_h > 0 else sim.grid.cell_of(b.y),
 			maxi(1, b.foot_w), maxi(1, b.foot_h), 8)
 	if cell == -1:
 		return
-	var cx := cell % sim.grid.width
-	var cy := cell / sim.grid.width
+	var cx: int = cell % sim.grid.width
+	var cy: int = cell / sim.grid.width
 	if cx + s["foot_w"] > sim.grid.width or cy + s["foot_h"] > sim.grid.height:
 		return
 	_issue(SimCommand.Kind.BUILD, [builder], {"type": type, "cx": cx, "cy": cy})

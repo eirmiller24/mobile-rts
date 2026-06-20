@@ -19,8 +19,7 @@ Every library entry has a **Kind** and a **Slice**:
   trigger) · `Query` (reads sim state, pure, no mutation) · `Action` (mutates
   hashed sim state) · `Pres` (presentation — emits to the view's unhashed event
   queue, never touches sim state, design_m5.md §3.4).
-- **Slice** — `✓` in the M5 initial slice (a target map needs it) · `◐` likely
-  M5 if cheap, else next · `○` later / parity (no target map needs it yet).
+- **Slice** — `✓` in the M5 · `◐` likely M5 if cheap, else next · `○` later / parity (no target map needs it yet).
 
 **Determinism rules the language enforces** (design_m5.md §3.8–3.9), so every
 entry below obeys them: numbers are `int`/`fixed` (no float type); randomness is
@@ -33,6 +32,7 @@ mutates that is sim state is hashed.
 A **filter** is either a built-in filter constant (§10) or a user predicate
 `fn(unit) -> bool`.
 
+Minor note for later: initialdamage_unit should go through armor. If we run into enough scenarios where we need a pure hp removal that ignores armor, we can always add that back in slice (a target map needs it) 
 
 ## 1. The type system
 

@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     libxtst6 libxi6 libxkbcommon0 libxxf86vm1 \
     libxfixes3 libgl1 libglx-mesa0 libsm6 libice6 \
     libx11-6 curl libpython3.13 build-essential \
-    libfontconfig1
+    libfontconfig1 python3-pip sudo
 
 RUN curl -L https://download.blender.org/release/Blender4.2/blender-4.2.19-linux-x64.tar.xz | \
     tar -xJ -C /opt && \
@@ -42,5 +42,7 @@ RUN if ! getent group $USER_GID > /dev/null 2>&1; then \
     else \
         usermod -l $USERNAME -d /home/$USERNAME -m $(getent passwd $USER_UID | cut -d: -f1); \
     fi
+
+RUN usermod -aG sudo $USERNAME
 
 ENTRYPOINT ["/bin/sh"]
