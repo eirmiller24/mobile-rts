@@ -31,3 +31,17 @@ native/**/*.os
 native/**/*.obj
 native/.sconsign.dblite
 native/**/.sconsign.dblite
+# Scratch renders from tools/preview_unit.gd
+.preview/
+
+# Blender scratch. `.blenderwork/` is rig/pose/viewport reference renders and
+# `*.blend1` is Blender's autosave of the previous save — both are regenerable
+# and neither is an input to `make models`. Keeping them out matters more than
+# usual now that binary assets go through LFS: committing derived binaries is
+# what makes a game repo's history grow without bound.
+.blenderwork/
+*.blend1
+
+# Python bytecode (tools/blender/)
+__pycache__/
+*.pyc

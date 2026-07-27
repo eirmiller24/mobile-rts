@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash"
+      "Bash",
+      "mcp__blender__get_scene_info",
+      "mcp__blender__execute_blender_code",
+      "mcp__blender__get_viewport_screenshot"
     ]
   }
 }

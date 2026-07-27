@@ -1,0 +1,20 @@
+# Git LFS server for this repo: a self-hosted rudolfs instance backed by S3,
+# running on the host as a podman service.
+#
+# localhost is correct for every environment that currently builds this project:
+# rudolfs runs on the host, and the devcontainer uses --network=host, so it
+# shares the host's network namespace and reaches the same 127.0.0.1:8080.
+#
+# Binding rudolfs to 127.0.0.1 is also what stands in for authentication --
+# rudolfs has none, so anyone who can reach it can read the assets and write to
+# the S3 bucket behind it. Loopback-only means nothing off this machine can.
+#
+# When a second machine or CI needs these objects, change the bind address and
+# this URL together -- e.g. to the Tailscale address (100.102.88.68) or a
+# MagicDNS name, which is the point at which Tailscale starts earning its keep.
+#
+# CI does not need this: actions/checkout@v4 defaults to lfs:false, and no test
+# run by .github/workflows/ci.yml loads an asset (view_model_check.gd is the
+# only one that does, and it is not wired into CI).
+[lfs]
+	url = "http://localhost:8080/api/eirmiller24/mobile-rts"

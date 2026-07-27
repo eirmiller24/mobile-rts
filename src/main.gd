@@ -442,7 +442,14 @@ func _capture_tick() -> void:
 		# for the local player into the per-tick snapshot (batch — no per-entity
 		# boundary crossing). See GameSim / design_m4.md §6.
 		view.visible = sim.should_render(e)
-		view.sync_state(e, capsule_time)
+		# Hand the view its attack target's position so modelled units can turn
+		# to face what they are hitting; facing itself is presentation-only.
+		var target_pos = null
+		if e.target_id != 0:
+			var t: SimEntity = sim.entities.get(e.target_id)
+			if t != null:
+				target_pos = _sim_to_view(t)
+		view.sync_state(e, capsule_time, target_pos)
 
 
 func _interpolate_views(alpha: float) -> void:

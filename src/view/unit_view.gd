@@ -23,6 +23,20 @@ const COLORS := {
 ## Capsules hover this high until they land (view-side flavor only).
 const CAPSULE_ALTITUDE := 5.0
 
+## How fast a unit turns toward where it is going, in radians/second. Facing is
+## pure presentation — the sim has no heading — so it is derived here from the
+## movement the sim already produced.
+const TURN_SPEED := 9.0
+## Sim-units of movement per tick below which a unit counts as standing still.
+const MOVE_EPSILON := 0.004
+
+## Animation state keys; the catalog's `view.animations` block maps these to
+## clip names inside the model, so a model with different clip names needs no
+## code change (design.md "UI as Data" applies to view data too).
+const ANIM_IDLE := "idle"
+const ANIM_MOVE := "move"
+const ANIM_ATTACK := "attack"
+
 var kind := Kind.UNIT
 var faction := FACTION_NEUTRAL
 ## Sim entity this node visualizes.
@@ -48,6 +62,29 @@ var _bob := 0.0
 ## Resource node amount at view creation, for the depletion tint.
 var _initial_amount := 0
 
+## The node the presentation transforms (growth, capsule altitude, morph) act
+## on: the primitive mesh, or the model root when the catalog supplies one.
+var _visual: Node3D
+## Uniform scale the model was authored at; presentation scaling multiplies it.
+var _visual_scale := 1.0
+## Resting height of the visual's origin. Primitive meshes are centred so they
+## sit at half their height; models are authored origin-at-feet, so they sit at
+## zero and grow upward from the ground.
+var _visual_y := 0.0
+var _anim: AnimationPlayer
+## Animation state key -> clip name in the model, from the catalog.
+var _clips := {}
+var _anim_state := ""
+## Set while a one-shot (attack) clip is playing and must not be interrupted.
+var _oneshot_until := 0.0
+## Previous tick's sim position, for deriving movement and facing.
+var _prev_sim := Vector2.ZERO
+var _has_prev_sim := false
+## Previous tick's attack cooldown; a rise means an attack fired this tick.
+var _prev_cooldown := 0
+var _target_yaw := 0.0
+var _has_yaw := false
+
 
 ## Catalog-driven construction. `view_block` comes from the compiled
 ## catalog (free-form; absent keys fall back to faction primitives).
@@ -67,6 +104,9 @@ static func from_entity(e: SimEntity, view_block: Dictionary,
 
 func _build_body(e: SimEntity, view: Dictionary) -> void:
 	_base_color = Color(view["color"]) if view.has("color") else COLORS[faction]
+	_base_height = view.get("height", 1.6 if e.is_unit() else 1.2)
+	if _build_model(view):
+		return
 	_mat = StandardMaterial3D.new()
 	_mat.albedo_color = _base_color
 	_body = MeshInstance3D.new()
@@ -96,8 +136,92 @@ func _build_body(e: SimEntity, view: Dictionary) -> void:
 						height, float(e.foot_h) / SimGrid.PATH_SUBDIV * 0.95)
 			box.material = _mat
 			_body.mesh = box
-	_body.position.y = height / 2.0
+	_visual_y = height / 2.0
+	_body.position.y = _visual_y
 	add_child(_body)
+	_visual = _body
+
+
+## Instance the catalog's `view.model` if it names one that loads. Returns
+## false so _build_body falls back to primitives when there is no model (or it
+## is missing) — that fallback is what lets models land one entry at a time.
+func _build_model(view: Dictionary) -> bool:
+	var path: String = str(view.get("model", ""))
+	if path == "" or not ResourceLoader.exists(path):
+		return false
+	var packed := ResourceLoader.load(path) as PackedScene
+	if packed == null:
+		push_warning("UnitView: view.model is not a scene: %s" % path)
+		return false
+	var inst := packed.instantiate() as Node3D
+	if inst == null:
+		push_warning("UnitView: view.model root is not a Node3D: %s" % path)
+		return false
+
+	# Models are authored at final game scale facing -Z (Godot forward), so
+	# these are corrections for assets that are not.
+	var s: float = float(view.get("model_scale", 1.0))
+	_visual_scale = s
+	inst.scale = Vector3(s, s, s)
+	var yaw: float = float(view.get("model_yaw", 0.0))
+	if not is_zero_approx(yaw):
+		inst.rotation.y = deg_to_rad(yaw)
+	add_child(inst)
+	_visual = inst
+
+	_clips = view.get("animations", {})
+	_anim = _find_anim_player(inst)
+	if _anim != null:
+		# glTF carries no loop flag, so the looping states are set here; the
+		# one-shot attack clip is deliberately left un-looped.
+		for state in [ANIM_IDLE, ANIM_MOVE]:
+			var clip: String = str(_clips.get(state, ""))
+			if _anim.has_animation(clip):
+				_anim.get_animation(clip).loop_mode = Animation.LOOP_LINEAR
+		_play_state(ANIM_IDLE)
+	return true
+
+
+## Yaw that aims the model's forward down a view-space direction (dx, dz).
+## Models face -Z at yaw 0, and rotating -Z by yaw y gives (-sin y, -cos y),
+## so the aim is atan2 of the *negated* direction — i.e. half a turn past it.
+## Both facing sources go through here so they cannot drift apart.
+static func _yaw_toward(dx: float, dz: float) -> float:
+	return atan2(dx, dz) + PI
+
+
+## Current animation state key (one of the ANIM_* constants), or "" when the
+## entry has no model. Exposed for the headless view checks.
+func anim_state() -> String:
+	return _anim_state
+
+
+## Yaw the unit is turning toward, in radians. Exposed for the headless checks.
+func facing_yaw() -> float:
+	return _target_yaw
+
+
+## Presentation scaling, on top of whatever scale the model was authored at.
+func _set_visual_scale(f: float) -> void:
+	var s := _visual_scale * f
+	_visual.scale = Vector3(s, s, s)
+
+
+## Faction/state tinting. Only meaningful for primitives — a textured model
+## carries its own materials and is left alone.
+func _tint(color: Color) -> void:
+	if _mat != null:
+		_mat.albedo_color = color
+
+
+func _find_anim_player(node: Node) -> AnimationPlayer:
+	if node is AnimationPlayer:
+		return node
+	for child in node.get_children():
+		var found := _find_anim_player(child)
+		if found != null:
+			return found
+	return null
 
 
 func _ready() -> void:
@@ -119,20 +243,48 @@ func _ready() -> void:
 		add_child(_ring)
 
 
+## Play the clip mapped to an animation state key, if the model has one.
+## `oneshot` clips hold the state until they finish (see _process).
+func _play_state(state: String, oneshot := false) -> void:
+	if _anim == null or _anim_state == state:
+		return
+	var clip: String = str(_clips.get(state, ""))
+	if not _anim.has_animation(clip):
+		return
+	_anim_state = state
+	_anim.play(clip)
+	_oneshot_until = _anim.get_animation(clip).length if oneshot else 0.0
+
+
+## Facing and one-shot timing run per frame, not per tick, so turns stay smooth
+## against the interpolated positions main.gd writes.
+func _process(delta: float) -> void:
+	if _oneshot_until > 0.0:
+		_oneshot_until -= delta
+		if _oneshot_until <= 0.0:
+			_anim_state = ""   # release the hold; next sync_state re-picks
+	if _has_yaw:
+		rotation.y = rotate_toward(rotation.y, _target_yaw, TURN_SPEED * delta)
+
+
 ## Per-tick presentation from sim state. The capsule "flies" by altitude
 ## (descending as its timer runs out); growth scales the body; damage
 ## shows a billboard bar (damaged entities only — thumbnail readability).
-func sync_state(e: SimEntity, capsule_time_ticks: int) -> void:
+## `target_pos` is the attack target's view position when the sim gave this
+## entity one, so melee units face what they are biting.
+func sync_state(e: SimEntity, capsule_time_ticks: int, target_pos = null) -> void:
 	if e.is_unit():
 		visible = visible and not e.is_underground()
-		_body.scale.y = 1.3 if e.morphed else 1.0
+		var morph := 1.3 if e.morphed else 1.0
+		_visual.scale = Vector3(_visual_scale, _visual_scale * morph, _visual_scale)
+		_sync_unit_motion(e, target_pos)
 		_update_health_bar(e)
 		return
 	if e.kind != SimEntity.Kind.STRUCTURE:
 		# Resource node depletion tint (§7.3).
-		if _initial_amount > 0 and _mat != null:
+		if _initial_amount > 0:
 			var left := clampf(float(e.amount) / _initial_amount, 0.0, 1.0)
-			_mat.albedo_color = _base_color.darkened(0.75 * (1.0 - left))
+			_tint(_base_color.darkened(0.75 * (1.0 - left)))
 		return
 	match e.build_state:
 		SimEntity.BuildState.CAPSULE:
@@ -140,24 +292,62 @@ func sync_state(e: SimEntity, capsule_time_ticks: int) -> void:
 			if capsule_time_ticks > 0:
 				t = clampf(float(e.build_ticks_left) / Fixed.from_int(capsule_time_ticks), 0.0, 1.0)
 			_bob += 0.12
-			_body.position.y = _base_height / 2.0 \
+			_visual.position.y = _visual_y \
 					+ CAPSULE_ALTITUDE * (0.3 + 0.7 * t) + sin(_bob) * 0.2
-			_body.scale = Vector3(0.5, 0.5, 0.5)
-			_mat.albedo_color = _base_color.lightened(0.3)
+			_set_visual_scale(0.5)
+			_tint(_base_color.lightened(0.3))
 		SimEntity.BuildState.GROWING:
 			var total := 1.0
 			var s := 1.0
 			if e.max_hp > 0:
 				total = float(e.hp) / e.max_hp # hp ramps with progress (§4.5)
 				s = 0.3 + 0.7 * clampf(total, 0.1, 1.0)
-			_body.position.y = _base_height * s / 2.0
-			_body.scale = Vector3(s, s, s)
-			_mat.albedo_color = _base_color.darkened(0.35)
+			_visual.position.y = _visual_y * s
+			_set_visual_scale(s)
+			_tint(_base_color.darkened(0.35))
 		_:
-			_body.position.y = _base_height / 2.0
-			_body.scale = Vector3.ONE
-			_mat.albedo_color = _base_color
+			_visual.position.y = _visual_y
+			_set_visual_scale(1.0)
+			_tint(_base_color)
 	_update_health_bar(e)
+
+
+## Derive facing and animation state from the sim state the entity already
+## carries. Nothing here writes to the sim: movement comes from comparing
+## successive sim positions, and an attack is a *rise* in the cooldown counter
+## (sim.gd sets cooldown = cooldown_ticks on the tick a shot lands).
+func _sync_unit_motion(e: SimEntity, target_pos) -> void:
+	var here := Vector2(Fixed.to_float(e.x), Fixed.to_float(e.y))
+	var moved := Vector2.ZERO
+	if _has_prev_sim:
+		moved = here - _prev_sim
+	_prev_sim = here
+	_has_prev_sim = true
+
+	var attacked := e.cooldown > _prev_cooldown
+	_prev_cooldown = e.cooldown
+	var is_moving := moved.length() > MOVE_EPSILON
+
+	# Face the thing being attacked if the sim gave us one, else where we are
+	# heading. Standing still with no target keeps the last facing.
+	if target_pos != null:
+		var to_target := (target_pos as Vector3) - position
+		if Vector2(to_target.x, to_target.z).length_squared() > 0.0001:
+			_target_yaw = _yaw_toward(to_target.x, to_target.z)
+			_has_yaw = true
+	elif is_moving:
+		# Sim +y maps to view +z (main.gd _sim_to_view), so sim motion is a
+		# view-space direction directly.
+		_target_yaw = _yaw_toward(moved.x, moved.y)
+		_has_yaw = true
+
+	if _anim == null:
+		return
+	if attacked:
+		_anim_state = ""            # restart even if already attacking
+		_play_state(ANIM_ATTACK, true)
+	elif _oneshot_until <= 0.0:
+		_play_state(ANIM_MOVE if is_moving else ANIM_IDLE)
 
 
 func _update_health_bar(e: SimEntity) -> void:

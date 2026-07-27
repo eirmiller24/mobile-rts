@@ -28,7 +28,7 @@ SCONS := scons -C native -j$(JOBS)
 .PHONY: default all desktop desktop-debug desktop-release \
 	android android-arm64 android-arm32 android-arm64-debug \
 	android-arm64-release android-arm32-debug android-arm32-release \
-	test clean help
+	models rig-mite test clean help
 
 default: desktop
 
@@ -74,6 +74,27 @@ test:
 	done; \
 	exit $$fail
 
+# --- Art pipeline (Blender -> glTF) -----------------------------------------
+# `models` is the everyday step: it re-exports the committed .blend sources,
+# so hand-edits made in the Blender GUI ship without regenerating anything.
+#
+# `rig-mite` REBUILDS the rig from the raw Tripo OBJ and overwrites the .blend,
+# discarding hand work — that is why it needs --force and is not part of
+# `models`. Edit tools/blender/*.py and run it only when you want the
+# generated rig back.
+BLENDER ?= blender
+
+MODEL_SOURCES := assets/source/hive_mite.blend
+assets/models/Hive/hive_mite.glb: assets/source/hive_mite.blend \
+		tools/blender/export_glb.py
+	$(BLENDER) --background $< --python tools/blender/export_glb.py -- $@
+
+models: assets/models/Hive/hive_mite.glb
+
+rig-mite:
+	$(BLENDER) --background --python tools/blender/rig_swarmer.py -- --force
+	$(MAKE) models
+
 # --- Housekeeping -----------------------------------------------------------
 clean:
 	rm -f bin/libmobile_rts_sim.*.so
@@ -85,6 +106,8 @@ help:
 	@echo "  make / make desktop   Linux debug+release"
 	@echo "  make android          all four android variants"
 	@echo "  make all              desktop + android"
+	@echo "  make models           re-export .blend sources to .glb"
+	@echo "  make rig-mite         REBUILD the mite rig from the OBJ (clobbers the .blend)"
 	@echo "  make test             run every headless check in tests/"
 	@echo "  make clean            remove built libs + scons artifacts"
 	@echo "Vars: JOBS=$(JOBS)  ANDROID_HOME=$(ANDROID_HOME)  GODOT=$(GODOT)"

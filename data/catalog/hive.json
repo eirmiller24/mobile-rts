@@ -92,7 +92,11 @@
 			"acquire_range": "6.0", "cooldown": "0.8", "sight": "7.0",
 			"bandwidth": 1, "cost_alloy": 25, "train_time": "8.0"
 		},
-		"view": { "shape": "capsule", "color": "9ccc65", "height": 0.9 },
+		"view": {
+			"shape": "capsule", "color": "9ccc65", "height": 0.9,
+			"model": "res://assets/models/Hive/hive_mite.glb",
+			"animations": { "idle": "Idle", "move": "Run", "attack": "Attack" }
+		},
 		"ui": { "label": "Mite", "description": "Cheap, fast melee swarmer." }
 	},
 	"hive.spitter": {

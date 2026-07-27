@@ -9,12 +9,34 @@
 *.cfg text
 *.import text
 
-# Binary assets
-*.png binary
-*.jpg binary
-*.webp binary
-*.glb binary
-*.blend binary
-*.ogg binary
-*.wav binary
-*.ttf binary
+# Binary assets — stored in Git LFS (see .lfsconfig).
+#
+# `filter=lfs diff=lfs merge=lfs -text` is what `git lfs track` writes; it
+# replaces the old `binary` macro (-diff -merge -text) rather than stacking with
+# it. Nothing here is hand-diffed, and all of it is either a vendor download or
+# a build artifact.
+#
+# NOTE: these lines are INERT until `git lfs install` has been run on the
+# machine. Without it git has no lfs filter, the files are committed as ordinary
+# blobs, and the only fix afterwards is a history rewrite. Do not commit assets
+# before then.
+#
+# Types not yet present in the repo (webp/ogg/wav/ttf) are tracked pre-emptively:
+# adding a type to LFS before it is ever committed is free, whereas doing it
+# afterwards requires `git lfs migrate` and a force-push.
+*.png   filter=lfs diff=lfs merge=lfs -text
+*.jpg   filter=lfs diff=lfs merge=lfs -text
+*.webp  filter=lfs diff=lfs merge=lfs -text
+*.glb   filter=lfs diff=lfs merge=lfs -text
+*.blend filter=lfs diff=lfs merge=lfs -text
+*.ogg   filter=lfs diff=lfs merge=lfs -text
+*.wav   filter=lfs diff=lfs merge=lfs -text
+*.ttf   filter=lfs diff=lfs merge=lfs -text
+
+# Vendor meshes. OBJ is technically a text format, but these are untouched
+# multi-MB Tripo downloads that are read once by the generator and never edited
+# or reviewed, so they belong in LFS with EOL normalisation off.
+*.obj   filter=lfs diff=lfs merge=lfs -text
+
+# .mtl (material sidecars) and .import (Godot metadata) stay in git proper --
+# they are small, text, and their diffs are meaningful.
