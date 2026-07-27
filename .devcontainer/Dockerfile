@@ -1,48 +1,69 @@
-FROM ubuntu:26.04
+# Thin Fedora dev environment for Godot projects.
+#
+# This image deliberately installs NO Godot, Blender, dotnet or BespokeSynth.
+# Those all come from the host via ~/Programs, which is visible because
+# devcontainer.json bind-mounts the whole of $HOME. That is the entire point:
+# the editor/LSP running on the host and the tooling running in here are the
+# same binaries, so the Godot language server and the Blender MCP socket are
+# shared rather than duplicated.
+#
+# What DOES belong here: things you want isolated per-project and reproducible,
+# i.e. the C/C++ toolchain and SCons used to build GDExtensions.
 
-RUN apt-get update && apt-get install -y locales git zip unzip && \
-    locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8
+FROM fedora:44
 
-RUN apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository ppa:deadsnakes/ppa
+# Three distinct groups, for three distinct reasons:
+#
+# 1. RUNTIME LIBRARIES FOR THE HOST TOOLS. This is the cost of borrowing
+#    binaries from ~/Programs instead of installing them: the binaries are the
+#    host's, but the shared libraries they load must exist *in here*. The X11/GL
+#    set below is exactly blender's DT_NEEDED list (verified with ldd) -- it is
+#    required even for `blender --background`, because those are load-time deps,
+#    not GUI-only ones.
+#
+#    libicu is the subtle one. .NET *dlopens* libicuuc.so from
+#    libSystem.Globalization.Native.so, so it never appears in ldd output and the
+#    failure surfaces only at runtime as "Couldn't find a valid ICU package".
+#    Fedora 44's `libicu` is 77.1; do NOT use the `libicu76` compat package.
+#
+# 2. BUILD TOOLCHAIN for GDExtensions. python3-scons (not "scons") is the Fedora
+#    package name; it provides /usr/bin/scons, so SConstructs can be invoked as
+#    `scons` directly rather than `python3 -m SCons`.
+#
+#    libstdc++-static is NOT optional. godot-cpp sets use_static_cpp=True by
+#    default (tools/linux.py) and links every extension with
+#    `-static-libgcc -static-libstdc++`, which needs libstdc++.a. On Fedora that
+#    lives in its own package -- gcc-c++ pulls in libstdc++-devel, which provides
+#    only the shared .so. Without it the compile succeeds and the LINK fails with
+#    "cannot find -lstdc++ ... have you installed the static version". Ubuntu's
+#    build-essential bundled the static lib, which is why this never surfaced
+#    before. Costs ~57MB, and project-redline (C#) does not need it, but the
+#    Dockerfile is deliberately identical across all the Godot projects.
+#
+# 3. CLI conveniences.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        libicu openssl-libs krb5-libs zlib ca-certificates \
+        libX11 libXau libxcb libXext libXfixes libXi libXrender libxkbcommon \
+        libICE libSM libuuid libglvnd libglvnd-glx vulkan-loader libgomp \
+        fontconfig \
+        python3-scons gcc gcc-c++ libstdc++-static make cmake \
+        pkgconf-pkg-config python3-devel \
+        git git-lfs openssh-clients \
+        which findutils procps-ng ripgrep jq unzip xz sudo \
+    && dnf clean all
 
-RUN apt-get update && apt-get install -y \
-    openssh-client libgomp1 xz-utils libxrender1 \
-    libxtst6 libxi6 libxkbcommon0 libxxf86vm1 \
-    libxfixes3 libgl1 libglx-mesa0 libsm6 libice6 \
-    libx11-6 curl libpython3.13 build-essential \
-    libfontconfig1 python3-pip sudo
-
-RUN curl -L https://download.blender.org/release/Blender4.2/blender-4.2.19-linux-x64.tar.xz | \
-    tar -xJ -C /opt && \
-    ln -s /opt/blender-4.2.19-linux-x64/blender /usr/local/bin/blender
-
-# Godot 4.6.3 headless, matching the CI gate. The editor build runs the
-# project's tests/*.gd scripts with --headless --path . -s.
-RUN curl -L https://github.com/godotengine/godot/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip \
-        -o /tmp/godot.zip && \
-    unzip /tmp/godot.zip -d /opt && \
-    rm /tmp/godot.zip && \
-    ln -s /opt/Godot_v4.6.3-stable_linux.x86_64 /usr/local/bin/godot
-
-RUN curl -L https://download.opensuse.org/repositories/home:/bespokesynth/Debian_13/amd64/bespokesynth_1.3.0-0_amd64.deb -o /tmp/bespokesynth.deb && \
-    apt-get install -y /tmp/bespokesynth.deb && \
-    rm /tmp/bespokesynth.deb
-
+# UID 1000 matches the host user; --userns=keep-id in devcontainer.json maps
+# host 1000 -> container 1000 so the bind-mounted $HOME is owned correctly.
 ARG USERNAME=eir
 ARG USER_UID=1000
-ARG USER_GID=1000
-RUN if ! getent group $USER_GID > /dev/null 2>&1; then \
-        groupadd --gid $USER_GID $USERNAME; \
-    else \
-        groupmod -n $USERNAME $(getent group $USER_GID | cut -d: -f1); \
-    fi \
-    && if ! getent passwd $USER_UID > /dev/null 2>&1; then \
-        useradd --uid $USER_UID --gid $USER_GID -m $USERNAME; \
-    else \
-        usermod -l $USERNAME -d /home/$USERNAME -m $(getent passwd $USER_UID | cut -d: -f1); \
-    fi
+RUN useradd --uid ${USER_UID} --user-group --create-home ${USERNAME} \
+    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME}
 
-RUN usermod -aG sudo $USERNAME
+# Host tool shims (~/Programs/bin holds godot, godot4.6, godot-csharp, blender,
+# dotnet). Set here rather than relying on ~/.bashrc so that non-interactive
+# processes -- VS Code tasks and the C#/Godot extension hosts -- also see them.
+ENV PATH="/home/${USERNAME}/Programs/bin:/home/${USERNAME}/.local/bin:${PATH}"
+ENV LANG=en_US.UTF-8
 
-ENTRYPOINT ["/bin/sh"]
+USER ${USERNAME}

@@ -1,6 +1,6 @@
 # Mobile RTS — project conventions
 
-Mobile RTS (StarCraft/WC3 style) in Godot 4.6 with GDScript. Two pillars:
+Mobile RTS (StarCraft/WC3 style) in Godot 4.7 with GDScript. Two pillars:
 touch-native commander controls and a WC3-style world editor. Full design:
 [design.md](design.md) — always read the design doc before doing any work, 
 and make sure to definitely read the "Technical Foundations" section before 
@@ -8,11 +8,22 @@ touching sim code.
 
 ## Environment
 
-- Godot 4.6.3 IS installed in the devcontainer, on PATH as `godot`. Run
-  headless checks and the project directly in the container. The user can
-  also run on the host via flatpak (`flatpak run org.godotengine.Godot`).
-- GDScript only — standard Godot build, no .NET/C#. Blender 4.2 is available
-  in the container for the asset pipeline (Blender → glTF).
+- Godot **4.7-stable** on PATH as `godot`, and `$GODOT` points at it (the
+  Makefile's `GODOT ?= godot` picks it up). The devcontainer does not install
+  Godot — it borrows the host's binary from `~/Programs/bin/godot` — so the
+  container and the host editor are the same build. Run headless checks and the
+  project directly in the container; run the GUI editor on the host.
+  `project.godot`, `.github/workflows/ci.yml` and the container all agree on
+  4.7 (CI was bumped from 4.6.3 on 2026-07-26).
+- GDScript only — standard Godot build, no .NET/C#. Blender **5.1.2** is on PATH
+  as `blender`, also borrowed from the host, for the asset pipeline
+  (Blender → glTF).
+- Android builds: `ANDROID_HOME` is set to `~/Programs/Android/sdk` and
+  `JAVA_HOME` to sdkman's Temurin 17. **`make android` cannot work yet** — that
+  SDK has no `ndk/` directory installed, and godot-cpp resolves the NDK at
+  `$ANDROID_HOME/ndk/<version>`.
+- SCons is on PATH as `scons` (Fedora package `python3-scons`); the Makefile
+  invokes it that way already.
 - Headless checks (one per script in `tests/`), runnable in the container:
   `godot --headless --path . -s res://tests/determinism_check.gd`
 

@@ -22,6 +22,10 @@ window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/handheld/orientation=4
 
+[dotnet]
+
+project/assembly_name="Mobile RTS"
+
 [input_devices]
 
 pointing/emulate_touch_from_mouse=true

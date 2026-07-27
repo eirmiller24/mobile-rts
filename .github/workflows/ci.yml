@@ -19,16 +19,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/godot-bin
-          key: godot-4.6.3-stable-linux-x86_64
+          key: godot-4.7-stable-linux-x86_64
 
       - name: Download Godot
         if: steps.cache-godot.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/godot-bin
           curl -fL -o /tmp/godot.zip \
-            https://github.com/godotengine/godot/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip
+            https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_linux.x86_64.zip
           unzip /tmp/godot.zip -d /tmp
-          mv /tmp/Godot_v4.6.3-stable_linux.x86_64 ~/godot-bin/godot
+          mv /tmp/Godot_v4.7-stable_linux.x86_64 ~/godot-bin/godot
 
       - name: Import project
         # Generates .godot/ (including the global class cache that class_name
@@ -87,16 +87,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/godot-bin
-          key: godot-4.6.3-stable-linux-x86_64
+          key: godot-4.7-stable-linux-x86_64
 
       - name: Download Godot
         if: steps.cache-godot.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/godot-bin
           curl -fL -o /tmp/godot.zip \
-            https://github.com/godotengine/godot/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip
+            https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_linux.x86_64.zip
           unzip /tmp/godot.zip -d /tmp
-          mv /tmp/Godot_v4.6.3-stable_linux.x86_64 ~/godot-bin/godot
+          mv /tmp/Godot_v4.7-stable_linux.x86_64 ~/godot-bin/godot
 
       - name: Import project
         run: ~/godot-bin/godot --headless --path . --import || true

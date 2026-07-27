@@ -1,24 +1,85 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the
-// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+// Godot dev environment for mobile-rts.
+//
+// Design: this container holds only the C/C++ toolchain and SCons. Godot,
+// Blender, the Android SDK and the JDK are used *from the host* via ~/Programs
+// and ~/.sdkman. That is what lets the Godot language server (127.0.0.1:6005) be
+// shared with the host instead of duplicated -- see --network=host below plus
+// the $HOME bind mount.
+//
+// The Dockerfile is byte-identical across all the Godot projects; per-project
+// variation lives here.
 {
-	"name": "Godot",
+	"name": "Godot — mobile-rts",
 	"build": {
 		"dockerfile": "Dockerfile",
 		"context": "."
-  },
+	},
 
-	"runArgs": ["--network=host", "--gpus=all"],
+	// --network=host        : share the host net namespace, so the Godot LSP is
+	//                         reachable on localhost. Also lets `adb` talk to a
+	//                         device/emulator paired on the host.
+	// --userns=keep-id      : map host uid 1000 -> container uid 1000, so the
+	//                         bind-mounted home isn't owned by "nobody". This
+	//                         replaces the old useradd/groupmod/usermod block.
+	// --ipc=host            : shared memory for host<->container tooling.
+	// --security-opt=label=disable
+	//                       : Fedora/Aurora is SELinux-enforcing. Required so the
+	//                         $HOME bind mount works WITHOUT :z/:Z -- relabelling
+	//                         an entire home directory would be destructive.
+	//
+	// Deliberately no GPU flags: `godot --headless` opens zero /dev/dri and
+	// /dev/nvidia handles. Run the GUI editor on the host.
+	"runArgs": [
+		"--network=host",
+		"--userns=keep-id",
+		"--ipc=host",
+		"--security-opt=label=disable"
+	],
 
-	"workspaceMount": "source=${localWorkspaceFolder},target=/home/eir/Documents/godot/mobile-rts,type=bind",
-	"mounts": ["source=${localEnv:HOME}/.ssh,target=/home/eir/.ssh,type=bind,readonly"],
+	// Mount the whole host home and point the workspace at the project inside it.
+	// One mount covers the repo, ~/Programs, ~/.sdkman, ~/.ssh and ~/.config/godot
+	// (so editor settings are shared with the host), with no double-mounting.
+	"workspaceMount": "source=${localEnv:HOME},target=/home/eir,type=bind",
 	"workspaceFolder": "/home/eir/Documents/godot/mobile-rts",
-  	"postStartCommand": "ssh-add /home/eir/.ssh/id_ed25519 && python3 -m pip install --break-system-packages scons",
-	"postCreateCommand": "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc",
-	
+
+	// XDG_RUNTIME_DIR, for the host's ssh-agent socket.
+	"mounts": [
+		"source=/run/user/1000,target=/run/user/1000,type=bind"
+	],
+
+	"containerEnv": {
+		// GDScript project -> the non-mono build. 4.7 matches project.godot's
+		// config/features; note .github/workflows/ci.yml still gates on 4.6.3.
+		// Read by the Makefile's `GODOT ?= godot`.
+		"GODOT": "/home/eir/Programs/bin/godot",
+
+		// ~/.bashrc already exports ANDROID_HOME, but that only reaches
+		// interactive shells. Setting it here means VS Code tasks and any
+		// non-interactive `make android` get it too -- same rationale as the
+		// Dockerfile's ENV PATH. godot-cpp resolves the NDK at $ANDROID_HOME/ndk.
+		"ANDROID_HOME": "/home/eir/Programs/Android/sdk",
+		// Needed by Godot's Android export (apksigner); sdkman's Temurin 17.
+		"JAVA_HOME": "/home/eir/.sdkman/candidates/java/current",
+
+		"SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+	},
+
 	"remoteUser": "eir",
+	"updateRemoteUserUID": false,
+
+	// Key is unencrypted, so this is non-interactive. Because the agent socket is
+	// the host's, this loads the identity into the host agent too.
+	// The old `pip install scons` step is gone -- scons comes from the image now,
+	// as does ~/.local/bin on PATH (set in the Dockerfile), so postCreateCommand's
+	// .bashrc append is no longer needed either.
+	"postStartCommand": "ssh-add ~/.ssh/id_ed25519 2>/dev/null || true",
 
 	"customizations": {
 		"vscode": {
+			"settings": {
+				"godotTools.editorPath.godot4": "/home/eir/Programs/bin/godot",
+				"terminal.integrated.defaultProfile.linux": "bash"
+			},
 			"extensions": [
 				"geequlim.godot-tools",
 				"anthropic.claude-code",
