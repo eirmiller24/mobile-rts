@@ -21,11 +21,13 @@
 # blobs, and the only fix afterwards is a history rewrite. Do not commit assets
 # before then.
 #
-# Types not yet present in the repo (webp/ogg/wav/ttf) are tracked pre-emptively:
-# adding a type to LFS before it is ever committed is free, whereas doing it
-# afterwards requires `git lfs migrate` and a force-push.
+# Types not yet present in the repo (jpeg/tga/webp/ogg/wav/ttf) are tracked
+# pre-emptively: adding a type to LFS before it is ever committed is free,
+# whereas doing it afterwards requires `git lfs migrate` and a force-push.
 *.png   filter=lfs diff=lfs merge=lfs -text
 *.jpg   filter=lfs diff=lfs merge=lfs -text
+*.jpeg  filter=lfs diff=lfs merge=lfs -text
+*.tga   filter=lfs diff=lfs merge=lfs -text
 *.webp  filter=lfs diff=lfs merge=lfs -text
 *.glb   filter=lfs diff=lfs merge=lfs -text
 *.blend filter=lfs diff=lfs merge=lfs -text

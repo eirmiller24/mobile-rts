@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://r1hjrjyuo25w"
+path="res://.godot/imported/robotic+bee+3d+model.obj-7afa31b7107f9242f79ea2b173e2a481.mesh"
+
+[deps]
+
+files=["res://.godot/imported/robotic+bee+3d+model.obj-7afa31b7107f9242f79ea2b173e2a481.mesh"]
+
+source_file="res://assets/models/Hive/laser_moth/robotic+bee+3d+model.obj"
+dest_files=["res://.godot/imported/robotic+bee+3d+model.obj-7afa31b7107f9242f79ea2b173e2a481.mesh", "res://.godot/imported/robotic+bee+3d+model.obj-7afa31b7107f9242f79ea2b173e2a481.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false
